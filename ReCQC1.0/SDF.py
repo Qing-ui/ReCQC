@@ -107,41 +107,57 @@ class Process_sdf_files:
         self.max_weight = max_weight
         self.min_c_atom_num = len_min_c_atom_num
         self.max_c_atom_num = len_max_c_atom_num
-        self.substructure_list = ['O=C1OC2=C(C=CC=C2)C(C3=CC=CC=C3)=C1',
-        'C12CCCCC1CCC3C2=CCC4C5CCCCC5CCC43',
-        'C[C@@](C=C)(C1)CCC2=C1CCC3[C@@]2(CCC[C@]3(CO)C)C',
-        'C1/C=C/CC/C=C/CCC1',
-        'O=C(C1=CC=CC=C1O2)C=C2C3=CC=CC=C3',
-        'O=C1C=CCC2=CCC3C4CCCC4CCC3C12',
-        'O=C1C2=C(C(C3=CC=CC=C13)=O)C=CC=C2',
-        'O=C1CCC2CCC3C(CC(O3)=O)CC12',
-       'O=C1C=C2CC3C(C(CC=C3)=O)CC2O1',
-        'C12CCC3CCCCC3C1CCC4C2CCC4',
-        'C1(/C=C/C2=CC=CC=C2)=CC=CC=C1'
-        'C12CCC3C(C1CCCC2)CCC4C3CCC5CCCC54',
-        'C12CCC/C=C\CCCC1C=CCC2',
-        'O=C([C@@H]1CC2=CC=CC=C2)OC[C@@H]1CC3=CC=CC=C3',
-        'C12CC[C@@]34C[C@@H](CC4)CCC3C1CCCC2',
-        'C12CCC3C(CC1=CCC4CCCCC24)CCC5CCCCC53',
-        'C=C1CCC2C(OC(C2)=O)C3CCCC13',
-        'O=C1[C@@]23C=CCC2CC=C[C@@H]1C4CC4CC3',
-        'O=C1C2CC[C@@]3(CC4=C(COC4)CCC3C5=O)O[C@@]65OC7[C@H](OC(C7)=O)C(C26)C1',
-        'C12CC1C3CCCC3CCC2',
-        'O=C1CC2C/C=C/CC/C=C/CC/C=C/CC2O1',
-        'CCCC1=CC(OC2=C1C3=C(C=CC(C)(O3)C)C4=C2CCCO4)=O',
-        '[H][C@@]12C[C@@H]([C@@]3([C@H](CCC[C@@]3(OC2(C)C)C1)OC(C4=CC=CC=C4)=O)C)OC(/C=C/C5=CC=CC=C5)=O',
-       'C12CCCC1C3CCCC3C2',
-        'C12CCC3=CC[C@H]4CC[C@]3(C1CCCC2)C4',
-        'CC1(C)CCCC2C3COCC3=CCC21',
-        'C12CCC3C=CCC31CCC2',
-        'O=C(CC1=CC=CC=C12)CCCCCCCCOC2=O',
-        'O=C1C2C(CC[C@H]2C(C)C)CCCC1',
-        'C=C(C)CCCCC1CCC(C)=CC1=O',
-        'C12CO[C@@H](C1CO[C@H]2C3=CC=CC=C3)C4=CC=CC=C4',
-        'O=C1OC2C3CCCC3CCCC2C1',
-        'C/C(CCC1CCCC2C=CCCC21)=C\C(OC)=O',
-        'C[C@@]1(C=C)CC2C([C@@]3(CCC[C@H](C3CC2=O)C)C)CC1',
-            ]
+        self.substructure_list = [
+            # 常见芳香环
+            'c1ccccc1',          # benzene
+            'c1ccccc1C',         # toluene-like phenyl methyl
+            'c1ccc(O)cc1',       # phenol
+            'c1ccc(OC)cc1',      # anisole-like
+            'c1ccc(C=O)cc1',     # benzaldehyde/aryl carbonyl
+            'c1ccc(C(=O)O)cc1',  # benzoic acid-like
+            'c1ccc(C(=O)N)cc1',  # benzamide-like
+        
+            # 常见脂肪环
+            'C1CC1',             # cyclopropane
+            'C1CCC1',            # cyclobutane
+            'C1CCCC1',           # cyclopentane
+            'C1CCCCC1',          # cyclohexane
+            'C1CCCCCC1',         # cycloheptane
+            'C1=CCCCC1',         # cyclohexene
+            'C1=CCCC1',          # cyclopentene
+        
+            # 常见含氧环
+            'C1CO1',             # oxirane
+            'C1CCO1',            # oxetane
+            'C1CCOC1',           # tetrahydrofuran
+            'C1CCOCC1',          # tetrahydropyran
+            'O1CCOCC1',          # 1,4-dioxane
+            'O=C1OCCC1',         # gamma-lactone
+            'O=C1OCCCC1',        # delta-lactone
+        
+            # 常见含氮环
+            'C1CCNCC1',          # piperidine
+            'C1CNCCN1',          # piperazine
+            'C1COCCN1',          # morpholine
+            'C1CCNC1',           # pyrrolidine
+        
+            # 常见芳香杂环
+            'c1ccncc1',          # pyridine
+            'c1cnccn1',          # pyrazine-like diazine
+            'c1ncc[nH]1',        # imidazole
+            'c1ccoc1',           # furan
+            'c1ccsc1',           # thiophene
+            'c1cc[nH]c1',        # pyrrole
+            'c1noccc1',          # oxazole/isoxazole-like
+            'c1nccs1',           # thiazole-like
+        
+            # 常见稠合环
+            'c1ccc2ccccc2c1',    # naphthalene
+            'c1ccc2[nH]ccc2c1',  # indole
+            'c1ccc2ncccc2c1',    # quinoline
+            'c1ccc2cnccc2c1',    # isoquinoline-like
+            'O=c1oc2ccccc2cc1',  # coumarin-like
+        ]
         self.process()
     def process(self):
         for path in self.all_paths:
