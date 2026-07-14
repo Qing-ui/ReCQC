@@ -111,6 +111,18 @@ associated article and report the software version and Git commit used:
 
 Machine-readable citation metadata are provided in [`CITATION.cff`](CITATION.cff).
 
+### Recommended review / 推荐阅读
+
+For broader context on computer-assisted natural-product dereplication and
+structure elucidation, including a discussion of ReCQC among NMR-based
+candidate-consistency tools, see:
+
+> Deng, C.; Dong, T.; Zhang, M.; Zi, Y.; Yang, W.; Hao, F.; Zhu, L.; Zhang, S.;
+> Li, C.; Ding, Z.; Cai, L. Computer-Assisted Analytical Workflows for Natural
+> Product Dereplication, Structure Elucidation, and Bioactivity-Oriented
+> Prioritization. *Analytical Chemistry* (2026), ASAP.
+> https://doi.org/10.1021/acs.analchem.6c02967
+
 ## Contact / 联系方式
 
 For usage questions and reproducible bug reports, contact

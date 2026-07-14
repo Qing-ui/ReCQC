@@ -60,3 +60,35 @@ preferred-citation:
   start: 8081
   end: 8091
   doi: "10.1021/acs.analchem.5c05654"
+references:
+  - type: article
+    title: >-
+      Computer-Assisted Analytical Workflows for Natural Product Dereplication,
+      Structure Elucidation, and Bioactivity-Oriented Prioritization
+    authors:
+      - given-names: "Chuanling"
+        family-names: "Deng"
+      - given-names: "Tingcai"
+        family-names: "Dong"
+      - given-names: "Meng"
+        family-names: "Zhang"
+      - given-names: "Yongfan"
+        family-names: "Zi"
+      - given-names: "Wenhao"
+        family-names: "Yang"
+      - given-names: "Feng"
+        family-names: "Hao"
+      - given-names: "Li"
+        family-names: "Zhu"
+      - given-names: "Shengqi"
+        family-names: "Zhang"
+      - given-names: "Chenzhe"
+        family-names: "Li"
+      - given-names: "Zhongtao"
+        family-names: "Ding"
+      - given-names: "Le"
+        family-names: "Cai"
+    journal: "Analytical Chemistry"
+    year: 2026
+    doi: "10.1021/acs.analchem.6c02967"
+    url: "https://doi.org/10.1021/acs.analchem.6c02967"
