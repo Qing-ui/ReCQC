@@ -1,0 +1,62 @@
+cff-version: 1.2.0
+message: >-
+  If you use ReCQC 1.0, ReCQC 2.0, or ReCQC Hungarian, cite the associated
+  article and report the software version and Git commit used.
+title: "ReCQC"
+type: software
+authors:
+  - given-names: "Tingcai"
+    family-names: "Dong"
+  - given-names: "Shengqi"
+    family-names: "Zhang"
+  - given-names: "Yongfan"
+    family-names: "Zi"
+  - given-names: "Xiya"
+    family-names: "Li"
+  - given-names: "Shu"
+    family-names: "Yao"
+  - given-names: "Feng"
+    family-names: "Hao"
+  - given-names: "Li"
+    family-names: "Zhu"
+  - given-names: "Zhongtao"
+    family-names: "Ding"
+  - given-names: "Le"
+    family-names: "Cai"
+repository-code: "https://github.com/Qing-ui/ReCQC"
+url: "https://github.com/Qing-ui/ReCQC"
+version: "2.0"
+date-released: 2025-11-21
+contact:
+  - email: "2638614209@qq.com"
+preferred-citation:
+  type: article
+  title: >-
+    ReCQC: A Novel NMR Data Analysis Platform Leveraging 13C NMR and HSQC
+    Database Strategies for Natural Product Dereplication
+  authors:
+    - given-names: "Tingcai"
+      family-names: "Dong"
+    - given-names: "Shengqi"
+      family-names: "Zhang"
+    - given-names: "Yongfan"
+      family-names: "Zi"
+    - given-names: "Xiya"
+      family-names: "Li"
+    - given-names: "Shu"
+      family-names: "Yao"
+    - given-names: "Feng"
+      family-names: "Hao"
+    - given-names: "Li"
+      family-names: "Zhu"
+    - given-names: "Zhongtao"
+      family-names: "Ding"
+    - given-names: "Le"
+      family-names: "Cai"
+  journal: "Analytical Chemistry"
+  year: 2026
+  volume: 98
+  issue: 11
+  start: 8081
+  end: 8091
+  doi: "10.1021/acs.analchem.5c05654"
