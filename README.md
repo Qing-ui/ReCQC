@@ -99,10 +99,6 @@ ruff check apps tests
 ruff format --check apps tests
 ```
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md) before changing scoring logic. Algorithm
-changes should include a fixed input dataset and expected output so that stable
-and Hungarian results can be compared explicitly.
-
 ## Citation / 引用
 
 If you use ReCQC 1.0, ReCQC 2.0, or the Hungarian implementation, cite the

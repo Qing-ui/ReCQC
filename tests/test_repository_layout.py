@@ -24,7 +24,6 @@ class RepositoryLayoutTests(unittest.TestCase):
             "README.md",
             "CHANGELOG.md",
             "CITATION.cff",
-            "CONTRIBUTING.md",
             "LICENSE",
             "SECURITY.md",
             "environment.yml",
