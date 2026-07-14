@@ -1,0 +1,6 @@
+# Runtime dependencies shared by ReCQC 2.0 and the Hungarian implementation.
+matplotlib>=3.9,<4.0
+numpy>=2.0,<3.0
+Pillow>=10.4,<12.0
+rdkit>=2024.9
+tqdm>=4.66,<5.0
