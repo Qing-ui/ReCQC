@@ -20,13 +20,17 @@ GitHub Releases.
 The GUI writes `chem_data.db` and result-image directories inside this folder.
 No GitHub repository is modified or contacted at runtime.
 
-## License
+## License / 许可证
 
 Non-commercial scientific research and educational use, copying, modification,
 and redistribution are permitted when attribution and this license notice are
 retained and modified versions are clearly identified. Commercial use requires
 prior written permission. See `LICENSE`; commercial licensing inquiries may be
 sent to `2638614209@qq.com`.
+
+允许将本软件用于非商业科学研究和教育，并可复制、修改和再分发；但须
+保留署名及许可声明，并明确标注修改版本及所作更改。商业使用须事先取得
+书面许可。完整条款见 `LICENSE`；商业许可请联系 `2638614209@qq.com`。
 
 ## Compatibility and logic
 
