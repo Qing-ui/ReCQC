@@ -131,9 +131,11 @@ not contain confidential research data.
 
 ## License / 许可证
 
-Copyright is reserved. The repository is publicly visible for scientific
-transparency and reproducibility, but copying, modification, redistribution, or
-commercial use requires prior written permission. See [`LICENSE`](LICENSE).
+ReCQC may be used, copied, modified, and redistributed for non-commercial
+scientific research and education, provided that attribution and the license
+notice are retained and modified versions are clearly identified. Commercial
+use requires prior written permission. See [`LICENSE`](LICENSE).
 
-本项目保留全部版权。代码公开用于科研透明性与可重复性；复制、修改、再分发或商业使用
-须事先取得书面许可，详见 [`LICENSE`](LICENSE)。
+ReCQC 允许用于非商业科研和教学目的的使用、复制、修改与再分发，但须保留署名及许可声明，
+并明确标注修改内容。商业使用须事先获得书面许可，详见 [`LICENSE`](LICENSE)。商业许可请联系
+[`2638614209@qq.com`](mailto:2638614209@qq.com)。
