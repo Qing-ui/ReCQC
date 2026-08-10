@@ -28,22 +28,19 @@ class CHOnlyScorerGUI:
         :param ch_data: CH输入数据
         :param tolerances: 误差容限 (c_tol, h_tol)
         """
-        # 初始化数据库
         self.db_path = db_path
-        processor = SDFBatchProcessor(db_path)
-        processor.process_files(sdf_files)
-
-        # 生成坐标数据
-        extractor = CarbonCoordinateExtractor(db_path)
-        extractor.process_all()
-
-        # 参数存储
+        self.sdf_files = sdf_files
         self.ch_mode = ch_mode
         self.CH_merge = CH_merge
         self.ch_data = ch_data or self._default_ch_data()
         self.c_tol, self.h_tol = tolerances
 
         self._validate_parameters()
+        self.import_report = SDFBatchProcessor.process_files_atomically(
+            sdf_files, db_path
+        )
+        extractor = CarbonCoordinateExtractor(db_path)
+        extractor.process_all()
 
     def _default_ch_data(self):
         """生成默认CH数据结构"""
@@ -57,6 +54,8 @@ class CHOnlyScorerGUI:
         """参数验证"""
         if self.ch_mode not in {1, 2, 3}:
             raise ValueError("The CH mode must be 1-3.")
+        if self.CH_merge not in {"Y", "N"}:
+            raise ValueError("CH_merge must be Y or N")
 
         if self.ch_mode == 1 and not {"All_type"}.issubset(self.ch_data):
             raise ValueError("Mode 1 requires All_type")
@@ -88,6 +87,8 @@ class CHOnlyScorerGUI:
             db_path=self.db_path,
             user_points=self.ch_data,
             mode=self.ch_mode,
+            c_tolerance=self.c_tol,
+            h_tolerance=self.h_tol,
             CH_merge=self.CH_merge,
         )
         matcher.process()

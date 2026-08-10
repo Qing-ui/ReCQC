@@ -14,7 +14,6 @@ class DBOrganization(object):
     def __init__(self, sdf_excel_obj, first_id=0):
         self.sdf_excel_obj = sdf_excel_obj
         self.first_id = first_id
-        self.write_sdf()
 
     def is_directory(self):
         error = []
@@ -145,17 +144,21 @@ class Add_file_path:
     def __init__(self):
         self.file_path = ""
 
-    def select_user_path(self):
+    def select_user_path(self, parent=None):
         errors = []
-        root = tk.Tk()
-        root.withdraw()
-        folder_path = filedialog.askdirectory()
+        temporary_root = None
+        if parent is None:
+            temporary_root = tk.Tk()
+            temporary_root.withdraw()
+            parent = temporary_root
+        folder_path = filedialog.askdirectory(parent=parent)
         if folder_path:
             self.file_path = folder_path
         else:
             errors.append("The file is not a  folder")
 
-        root.destroy()
+        if temporary_root is not None:
+            temporary_root.destroy()
         return self.file_path
 
     def delete_user_path(self):

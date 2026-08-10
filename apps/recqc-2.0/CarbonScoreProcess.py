@@ -1,14 +1,9 @@
 import os
-import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 
 import numpy as np
 from tqdm import tqdm
-
-# 线程本地存储用于数据库连接
-thread_local = threading.local()
-
 
 class GreedyMatcher:
     def __init__(
@@ -36,6 +31,9 @@ class GreedyMatcher:
 
     def _validate_inputs(self):
         """参数校验（支持两种模式）"""
+        if self.C_merge not in {"Y", "N"}:
+            raise ValueError("C_merge must be 'Y' or 'N'")
+
         if self.mode == "typed":
             if not isinstance(self.user_data, dict) or any(
                 not isinstance(v, list) for v in self.user_data.values()
@@ -56,19 +54,17 @@ class GreedyMatcher:
 
     @contextmanager
     def _get_conn(self):
-        """线程安全的数据库连接管理"""
-        if not hasattr(thread_local, "conn"):
-            thread_local.conn = sqlite3.connect(
-                self.db_path, check_same_thread=False, timeout=30, isolation_level=None
-            )
-            thread_local.conn.execute("PRAGMA journal_mode=WAL")
-            thread_local.conn.execute("PRAGMA synchronous=NORMAL")
-            thread_local.conn.execute("PRAGMA cache_size=-20000")  # 20MB缓存
+        """Open a short-lived connection for the current database."""
+        conn = sqlite3.connect(self.db_path, timeout=30, isolation_level=None)
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA cache_size=-20000")  # 20MB缓存
         try:
-            yield thread_local.conn
-        except sqlite3.DatabaseError as e:
-            thread_local.conn.rollback()
+            yield conn
+        except sqlite3.DatabaseError:
+            conn.rollback()
             raise
+        finally:
+            conn.close()
 
     def _create_indexes(self):
         """创建必要索引"""
@@ -100,6 +96,9 @@ class GreedyMatcher:
                     FOREIGN KEY(mol_id) REFERENCES molecules(mol_id)
                 )
             """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_greedy_matches_mol ON greedy_matches(mol_id)"
+            )
 
     def _precache_molecules(self):
         """预加载分子数据到内存（修正过滤方向）"""
@@ -111,14 +110,25 @@ class GreedyMatcher:
                 JOIN carbons c ON m.mol_id = c.mol_id
                 WHERE m.carbon_count BETWEEN ? AND ?    -- 用户指定范围
                   AND m.fw BETWEEN ? AND ?              -- 分子量范围
-                  AND m.carbon_count <= ?               -- 关键修正点：数据库碳数≤用户总碳数
+                  AND (
+                      (? = 'N' AND m.carbon_count <= ?)
+                      OR
+                      (? = 'Y' AND (
+                          SELECT COUNT(DISTINCT c2.c_shift)
+                          FROM carbons c2
+                          WHERE c2.mol_id = m.mol_id
+                      ) <= ?)
+                  )
             """
             params = (
                 self.c_range[0],
                 self.c_range[1],
                 self.fw_range[0],
                 self.fw_range[1],
-                self.user_total,  # 用户总碳数
+                self.C_merge,
+                self.user_total,
+                self.C_merge,
+                self.user_total,
             )
             rows = conn.execute(query, params).fetchall()
 
@@ -155,11 +165,13 @@ class GreedyMatcher:
                         continue
 
                     # 在未使用的用户位移中找最小值
-                    valid_user = [i for i in range(len(user)) if i not in used_user]
-                    if not valid_user:
+                    if len(used_user) >= len(user):
                         break
 
-                    u_idx = valid_user[np.argmin(diff[db_idx][valid_user])]
+                    # Used columns have already been replaced by infinity, so
+                    # this selects the same first minimum without rebuilding a
+                    # Python list on every database atom.
+                    u_idx = int(np.argmin(diff[db_idx]))
                     matches.append(
                         (
                             user_shifts[u_idx],
@@ -208,11 +220,10 @@ class GreedyMatcher:
                         continue
 
                     # 在未使用的用户位移中找最小值
-                    valid_user = [i for i in range(len(user)) if i not in used_user]
-                    if not valid_user:
+                    if len(used_user) >= len(user):
                         break
 
-                    u_idx = valid_user[np.argmin(diff[group_idx][valid_user])]
+                    u_idx = int(np.argmin(diff[group_idx]))
                     c_shift_val = db_shifts[group_idx]
                     group_carbons = group_rep[group_idx][1]
 
@@ -230,12 +241,7 @@ class GreedyMatcher:
                     diff[:, u_idx] = np.inf  # 标记该用户位移为已用
 
                 # 找出未匹配的原子（整组未匹配的原子）
-                matched_indices = {
-                    carbon["c_index"]
-                    for _, c_idx, _ in matches
-                    for carbon in db_candidates
-                    if carbon["c_index"] == c_idx
-                }
+                matched_indices = {c_idx for _, c_idx, _ in matches}
                 unmatched = [
                     carbon for carbon in db_candidates if carbon["c_index"] not in matched_indices
                 ]
@@ -270,10 +276,11 @@ class GreedyMatcher:
                         used_user_shifts.add(u_shift)
 
                 # 阶段2：剩余原子全局匹配（使用所有未使用的用户位移）
+                matched_indices = {match[2] for match in all_matches}
                 remaining_candidates = [
                     c
                     for c in mol_data["carbons"].values()
-                    if c["c_index"] not in [m[2] for m in all_matches]
+                    if c["c_index"] not in matched_indices
                 ]
                 remaining_user = [
                     s
@@ -295,13 +302,14 @@ class GreedyMatcher:
                 for u_shift, c_idx, c_shift in matches:
                     all_matches.append((None, u_shift, c_idx, c_shift, True))
 
-            self._bulk_save_matches(mol_id, mol_data["name"], all_matches)
+            return self._prepare_match_rows(mol_id, mol_data["name"], all_matches)
 
         except Exception as e:
             print(f"Processing molecule {mol_id} failed: {str(e)}")
+            return []
 
-    def _bulk_save_matches(self, mol_id, mol_name, matches):
-        """保存匹配结果到数据库"""
+    def _prepare_match_rows(self, mol_id, mol_name, matches):
+        """Convert one molecule's matches into database rows."""
         data = []
         for match in matches:
             h_type, u_shift, c_idx, db_shift, type_matched = match
@@ -319,26 +327,27 @@ class GreedyMatcher:
                 )
             )
 
+        return data
+
+    @staticmethod
+    def _insert_match_rows(conn, data):
         if data:
-            try:
-                with self._get_conn() as conn:
-                    conn.executemany(
-                        """
-                        INSERT INTO greedy_matches
-                        (mol_id, mol_name, user_shift,
-                         db_c_index, db_shift, type_matched, connected_h_shifts, connected_carbons)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                        data,
-                    )
-                    conn.commit()
-            except sqlite3.Error as e:
-                print(f"Save molecule {mol_id} result failed: {str(e)}")
+            conn.executemany(
+                """
+                INSERT INTO greedy_matches
+                (mol_id, mol_name, user_shift,
+                 db_c_index, db_shift, type_matched, connected_h_shifts, connected_carbons)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                data,
+            )
 
     def run(self, max_workers=None):
         """执行匹配流程"""
-        # 自动设置线程数
-        max_workers = max_workers or min(os.cpu_count() * 2, 32)
+        # Matching is small NumPy work plus Python bookkeeping. More workers
+        # than CPU cores add scheduling overhead. Database writes stay on this
+        # thread so worker threads never contend for SQLite's write lock.
+        max_workers = max_workers or min(os.cpu_count() or 1, 8)
 
         print("Pre-loaded molecular data...")
         self._precache_molecules()
@@ -349,20 +358,24 @@ class GreedyMatcher:
         batch_size = 500
         batches = [qualified[i : i + batch_size] for i in range(0, len(qualified), batch_size)]
 
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            with tqdm(total=len(qualified), desc="Match progress") as pbar:
-                for batch in batches:
-                    futures = {
-                        executor.submit(self._process_molecule, mol_id): mol_id for mol_id in batch
-                    }
-                    for future in as_completed(futures):
-                        try:
-                            future.result()
-                        except Exception as e:
-                            mid = futures[future]
-                            print(f"Molecule {mid} error: {str(e)}")
-                        finally:
-                            pbar.update(1)
+        try:
+            with self._get_conn() as conn:
+                conn.execute("BEGIN")
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    with tqdm(total=len(qualified), desc="Match progress") as pbar:
+                        for batch in batches:
+                            rows = []
+                            # map preserves the input molecule order; only the
+                            # pure in-memory matching work runs on workers.
+                            for molecule_rows in executor.map(self._process_molecule, batch):
+                                rows.extend(molecule_rows)
+                                pbar.update(1)
+                            self._insert_match_rows(conn, rows)
+                conn.commit()
+        except sqlite3.Error:
+            with self._get_conn() as conn:
+                conn.rollback()
+            raise
 
         # 最终验证
         self._validate_results()
@@ -373,12 +386,17 @@ class GreedyMatcher:
             # 验证过滤条件
             invalid = conn.execute(
                 """
-                SELECT COUNT(*)
+                SELECT COUNT(DISTINCT gm.mol_id)
                 FROM greedy_matches gm
                 JOIN molecules m ON gm.mol_id = m.mol_id
-                WHERE m.carbon_count > ?
+                WHERE (? = 'N' AND m.carbon_count > ?)
+                   OR (? = 'Y' AND (
+                       SELECT COUNT(DISTINCT c.c_shift)
+                       FROM carbons c
+                       WHERE c.mol_id = m.mol_id
+                   ) > ?)
             """,
-                (self.user_total,),
+                (self.C_merge, self.user_total, self.C_merge, self.user_total),
             ).fetchone()[0]
 
             if invalid > 0:
@@ -431,6 +449,7 @@ class CarbonScorer:
                     FOREIGN KEY(mol_id) REFERENCES molecules(mol_id)
                 )
             """)
+            conn.execute("CREATE INDEX idx_carbon_scores_mol ON carbon_scores(mol_id)")
             conn.commit()
 
     def process_scoring(
@@ -575,7 +594,6 @@ class CarbonScorer:
         """,
             batch,
         )
-        conn.commit()
 
 
 import json
@@ -810,4 +828,3 @@ class RobustMoleculeScorer:
         """,
             (mol_id, mol_name, round(final_score, 4), json.dumps(score_details)),
         )
-        conn.commit()

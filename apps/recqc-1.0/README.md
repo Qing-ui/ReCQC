@@ -1,9 +1,14 @@
 # ReCQC 1.0 — formal release
 
-This directory contains the formal ReCQC 1.0 workflow described in the ReCQC
-publication. Repository maintenance may improve formatting, diagnostics, and
-error handling, while the published scoring and matching behavior remains
-unchanged.
+This directory contains the maintained ReCQC 1.0 workflow described in the
+ReCQC publication. Carbon assignment follows the original ReCQC 2.0 two-stage
+matching order: nearest unused type-compatible peaks first, followed by nearest
+unused fallback peaks. ReCQC 1.0's ambiguous DEPT labels remain supported.
+
+The maximum-substructure implementation aggregates unique atom scores within
+each occurrence, evaluates cumulative atom unions, and then applies the
+existing core/environment molecular weighting. No additional chemistry
+thresholds are introduced by these maintenance corrections.
 
 ## Run
 

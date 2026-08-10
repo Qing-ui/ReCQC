@@ -1,13 +1,15 @@
 import tkinter as tk
-from tkinter import filedialog, ttk
+from pathlib import Path
+from tkinter import messagebox, ttk
 
 from DBORGANIZATION import Add_file_path, DBOrganization
 from DRAWCOMPOUND import DrawCompound
 from MATCHINSTITUTE import ProductBestCompare, ScoreInstitution
 from PIL import Image, ImageTk
-from png import ResultViewerApp, ViewPage
+from png import ResultViewerApp
 from SDF import Add_user_path, File_path, Process_sdf_files
 from similarsearch import GetSubstructures, SimilarSearch
+from ui_theme import COLORS, configure_theme, make_text
 from USERINPUT import ProcesInputdata
 
 
@@ -15,831 +17,623 @@ class Main:
     def __init__(self, master: tk.Tk):
         self.root = master
         self.root.title("ReCQC 1.0")
-        self.root.geometry("800x600")
-        self.icon_path = "tcalxy.jpg"
-        self.icon = self.get_icon()
-        self.root.iconphoto(True, self.icon)
-        self.creat_main_page()
+        self.root.geometry("1040x760")
+        self.root.minsize(920, 680)
+        configure_theme(self.root)
+        self._set_icon()
 
-    def get_icon(self):
-        icon = Image.open(self.icon_path)
-        icon1 = icon.resize((50, 50), Image.LANCZOS)
-        icon_photo = ImageTk.PhotoImage(icon1)
-        return icon_photo
+        self.header = ttk.Frame(self.root, style="Header.TFrame", padding=(24, 12))
+        self.header.pack(fill="x")
+        ttk.Label(self.header, text="ReCQC 1.0", style="Header.TLabel").pack(side="left")
+        ttk.Label(
+            self.header,
+            text="13C NMR dereplication",
+            style="Header.TLabel",
+            font=("Segoe UI", 10),
+        ).pack(side="left", padx=(12, 0))
 
-    def creat_main_page(self):
-        self.primary_page_frame = PrimaryPage(self.root)
-        self.db_page_frame = DBPage(self.root)
-        self.query_page_frame = QueryPage(self.root)
-        self.about_page_frame = AboutPage(self.root)
-        self.primary_page_frame.pack(fill="both", expand=True)
-        menu = tk.Menu(self.root)
-        menu.add_command(label="Main", command=self.show_main_page)
-        menu.add_command(label="DatabaseTool", command=self.creat_db_page)
-        menu.add_command(label="About", command=self.about_us)
-        self.root.config(menu=menu, bg="grey", bd=1)
-        self.root.mainloop()
+        nav = ttk.Frame(self.header, style="Header.TFrame")
+        nav.pack(side="right")
+        ttk.Button(
+            nav,
+            text="Analysis",
+            style="Header.TButton",
+            command=lambda: self.show_page("analysis", reset=True),
+        ).pack(side="left", padx=2)
+        ttk.Button(
+            nav,
+            text="Database tools",
+            style="Header.TButton",
+            command=lambda: self.show_page("database"),
+        ).pack(side="left", padx=2)
+        ttk.Button(
+            nav,
+            text="About",
+            style="Header.TButton",
+            command=lambda: self.show_page("about"),
+        ).pack(side="left", padx=2)
 
-    def show_main_page(self):
-        self.primary_page_frame.pack(fill="both", expand=True)
-        self.db_page_frame.pack_forget()
-        self.query_page_frame.pack_forget()
-        self.about_page_frame.pack_forget()
+        self.content = ttk.Frame(self.root, padding=24)
+        self.content.pack(fill="both", expand=True)
+        self.content.rowconfigure(0, weight=1)
+        self.content.columnconfigure(0, weight=1)
 
-    def creat_db_page(self):
-        self.primary_page_frame.pack_forget()
-        self.db_page_frame.pack(fill="both", expand=True)
-        self.query_page_frame.pack_forget()
-        self.about_page_frame.pack_forget()
+        self.pages = {
+            "analysis": PrimaryPage(self.content),
+            "database": DBPage(self.content),
+            "about": AboutPage(self.content),
+        }
+        for page in self.pages.values():
+            page.grid(row=0, column=0, sticky="nsew")
+        self.show_page("analysis", reset=True)
 
-    def about_us(self):
-        self.primary_page_frame.forget()
-        self.db_page_frame.pack_forget()
-        self.query_page_frame.pack_forget()
-        self.about_page_frame.pack(fill="both", expand=True)
+    def _set_icon(self):
+        icon_path = Path(__file__).resolve().with_name("tcalxy.jpg")
+        try:
+            icon = Image.open(icon_path).resize((48, 48), Image.Resampling.LANCZOS)
+            self.icon = ImageTk.PhotoImage(icon)
+            self.root.iconphoto(True, self.icon)
+        except (OSError, tk.TclError):
+            self.icon = None
+
+    def show_page(self, page_name, reset=False):
+        page = self.pages[page_name]
+        if reset and isinstance(page, PrimaryPage):
+            page.show_welcome()
+        page.tkraise()
 
 
-class PrimaryPage(tk.Frame):
-    def __init__(self, root):
-        super().__init__(root)
-        self.configure(bg="#2C3E50")
-
-        self.parameter_frame = ParameterPage(
-            root, self.goto_primary_page, filepath_obj=File_path(), usepath_obj=Add_user_path()
-        )  # 创建搜索页面框架，但初始时隐藏
-        self.place(relwidth=1, relheight=1)  # 使PrimaryPage填充整个root窗口
-        self.create_primary_page()
-
-    def create_primary_page(self):
-        self.pure_spectrum_query_button = tk.Button(
+class PrimaryPage(ttk.Frame):
+    def __init__(self, master):
+        super().__init__(master)
+        self.rowconfigure(0, weight=1)
+        self.columnconfigure(0, weight=1)
+        self.filepath = File_path()
+        self.custom_library = Add_user_path()
+        self.current_child = None
+        self.welcome = self._build_welcome()
+        self.parameter_page = ParameterPage(
             self,
-            text="Spectrum Search",
-            font=("Arial", "20", "bold"),
-            bg="grey",
-            command=self.goto_parameter_page,
+            on_back=self.show_welcome,
+            on_continue=self.show_search,
+            filepath_obj=self.filepath,
+            usepath_obj=self.custom_library,
         )
-        self.pure_spectrum_query_button.place(relx=0.5, rely=0.7, anchor="center")
+        self.show_welcome()
 
-        self.main_page_label1 = tk.Label(
+    def _build_welcome(self):
+        page = ttk.Frame(self)
+        page.columnconfigure(0, weight=1)
+        page.rowconfigure(0, weight=1)
+        card = ttk.Frame(page, style="Surface.TFrame", padding=(60, 50))
+        card.grid(row=0, column=0, sticky="nsew", padx=70, pady=55)
+        card.columnconfigure(0, weight=1)
+
+        ttk.Label(card, text="Natural-product mixture analysis", style="Section.TLabel").grid(
+            row=0, column=0, pady=(10, 14)
+        )
+        ttk.Label(
+            card,
+            text="ReCQC 1.0",
+            style="Surface.TLabel",
+            font=("Segoe UI Semibold", 34),
+        ).grid(row=1, column=0, pady=(0, 12))
+        ttk.Label(
+            card,
+            text=(
+                "Screen candidate structures from experimental 13C NMR and DEPT data, "
+                "with maximum-core substructure scoring for mixture dereplication."
+            ),
+            style="Muted.TLabel",
+            font=("Segoe UI", 11),
+            wraplength=620,
+            justify="center",
+        ).grid(row=2, column=0, pady=(0, 28))
+        ttk.Button(
+            card,
+            text="Start spectrum analysis",
+            style="Primary.TButton",
+            command=lambda: self._show_child(self.parameter_page),
+        ).grid(row=3, column=0, pady=(6, 14))
+        ttk.Label(
+            card,
+            text="Step 1: choose libraries and thresholds  •  Step 2: enter spectra  •  Step 3: review candidates",
+            style="Muted.TLabel",
+        ).grid(row=4, column=0, pady=(8, 0))
+        return page
+
+    def _show_child(self, child):
+        if self.current_child is not None:
+            self.current_child.grid_remove()
+        self.current_child = child
+        child.grid(row=0, column=0, sticky="nsew")
+
+    def show_welcome(self):
+        self._show_child(self.welcome)
+
+    def show_search(self, config):
+        search_page = SearchPage(
             self,
-            text="Natural Compounds Analyse",
-            font=("Arial", "25", "italic", "bold"),
-            bg="#2C3E50",
-            fg="grey",
+            config=config,
+            on_back=lambda: self._show_child(self.parameter_page),
         )
-        self.main_page_label1.place(relx=0.5, rely=0.3, anchor="center")
-        self.main_page_label2 = tk.Label(
-            self, text="ReCQC-1.0", font=("Arial", "25", "italic", "bold"), bg="#2C3E50", fg="grey"
-        )
-        self.main_page_label2.place(relx=0.5, rely=0.4, anchor="center")
-        self.main_page_label3 = tk.Label(
-            self,
-            text="a software designed for analyse mixture or pure compounds",
-            font=("Arial", "15", "italic", "bold"),
-            bg="#2C3E50",
-            fg="black",
-        )
-        self.main_page_label3.place(relx=0.5, rely=0.5, anchor="center")
-
-    def goto_parameter_page(self):
-        self.place_forget()  # 隐藏当前页面
-        self.parameter_frame.place(relwidth=1, relheight=1)  # 显示搜索页面
-
-    def goto_primary_page(self):
-        self.parameter_frame.place_forget()
-        self.place(relwidth=1, relheight=1)
-
-    def place_forget(self):
-
-        self.place(relwidth=0, relheight=0)
+        self._show_child(search_page)
 
 
-class ParameterPage(tk.Frame):
-    def __init__(self, root, callback, filepath_obj, usepath_obj):
-        super().__init__(root, bg="#2C3E50")
-        self.callback = callback
-        self.usepath_obj = usepath_obj
+class ParameterPage(ttk.Frame):
+    def __init__(self, master, on_back, on_continue, filepath_obj, usepath_obj):
+        super().__init__(master)
+        self.on_back = on_back
+        self.on_continue = on_continue
         self.filepath_obj = filepath_obj
-        self.usepath = []
-        self.create_parameter_page()
+        self.usepath_obj = usepath_obj
+        self.custom_paths = []
+        self._build()
 
-    def create_parameter_page(self):
+    def _build(self):
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(1, weight=1)
+        ttk.Label(self, text="Analysis setup", style="Title.TLabel").grid(
+            row=0, column=0, sticky="w"
+        )
+        ttk.Label(
+            self,
+            text="Select candidate libraries and define atom-error and maximum-core thresholds.",
+            style="Subtitle.TLabel",
+        ).grid(row=0, column=0, sticky="w", pady=(42, 0))
 
-        self.back_button = tk.Button(
-            self, text="Back", font=("Arial", "12"), bg="grey", command=self.callback
-        )
-        self.back_button.place(relx=0.2, rely=0.8, anchor="center")
-        self.search_button = tk.Button(
-            self, text="Next", font=("Arial", "12"), bg="grey", command=self.goto_search_page
-        )
-        self.search_button.place(relx=0.8, rely=0.8, anchor="center")
-        # 创建“库选择”标签
-        self.library_label = tk.Label(
-            self,
-            text="Library Selection",
-            font=("Arial", "12"),
-            bg="#FFFFFF",
-            fg="black",
-            borderwidth=2,
-            relief="solid",
-            padx=5,
-            pady=2,
-        )
-        self.library_label.config(bg="black", fg="white")
-        self.library_label.place(relx=0.1, rely=0.1, anchor="w")
-        self.library_label = tk.Label(
-            self,
-            text="Parameter Settings",
-            font=("Arial", "12"),
-            bg="#FFFFFF",
-            fg="black",
-            borderwidth=2,
-            relief="solid",
-            padx=5,
-            pady=2,
-        )
-        self.library_label.config(bg="black", fg="white")
-        self.library_label.place(relx=0.1, rely=0.3, anchor="w")
+        body = ttk.Frame(self)
+        body.grid(row=1, column=0, sticky="nsew", pady=(24, 18))
+        body.columnconfigure(0, weight=1)
+        body.columnconfigure(1, weight=1)
+        body.rowconfigure(0, weight=1)
 
-        self.checkbox_var1 = tk.IntVar()
-        self.checkbox_var2 = tk.IntVar()
-        self.checkbox_var3 = tk.IntVar()
+        library = ttk.LabelFrame(body, text="Candidate libraries")
+        library.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        library.columnconfigure(0, weight=1)
+        self.experimental_var = tk.BooleanVar(value=False)
+        self.model_var = tk.BooleanVar(value=False)
+        self.prediction_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            library,
+            text="Experimental database",
+            variable=self.experimental_var,
+            command=self._toggle_experimental,
+        ).grid(row=0, column=0, sticky="w")
+        ttk.Checkbutton(
+            library,
+            text="Simulated database",
+            variable=self.model_var,
+            command=self._toggle_model,
+        ).grid(row=1, column=0, sticky="w")
+        ttk.Checkbutton(
+            library,
+            text="Predicted database",
+            variable=self.prediction_var,
+            command=self._toggle_prediction,
+        ).grid(row=2, column=0, sticky="w")
+        ttk.Separator(library).grid(row=3, column=0, sticky="ew", pady=14)
+        ttk.Button(library, text="Add custom SDF…", command=self._add_custom_library).grid(
+            row=4, column=0, sticky="w"
+        )
+        ttk.Button(library, text="Clear custom libraries", command=self._clear_custom).grid(
+            row=5, column=0, sticky="w", pady=(8, 0)
+        )
+        self.custom_label = ttk.Label(
+            library,
+            text="No custom library selected",
+            style="Muted.TLabel",
+            wraplength=360,
+            justify="left",
+        )
+        self.custom_label.grid(row=6, column=0, sticky="ew", pady=(14, 0))
 
-        self.checkbox1 = tk.Checkbutton(
-            self, text="Experimental DB", variable=self.checkbox_var1, font=("Arial", "12")
-        )
-        self.checkbox2 = tk.Checkbutton(
-            self, text="Simulated DB", variable=self.checkbox_var2, font=("Arial", "12")
-        )
-        self.checkbox3 = tk.Checkbutton(
-            self, text="Predicted DB", variable=self.checkbox_var3, font=("Arial", "12")
-        )
+        scoring = ttk.LabelFrame(body, text="Scoring and candidate filters")
+        scoring.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
+        scoring.columnconfigure(1, weight=1)
+        self.green_var = tk.StringVar(value="2.0")
+        self.yellow_var = tk.StringVar(value="4.0")
+        self.min_mw_var = tk.StringVar(value="0")
+        self.max_mw_var = tk.StringVar(value="1000")
+        self.min_c_var = tk.StringVar(value="0")
+        self.max_c_var = tk.StringVar(value="100")
+        self.skeleton_var = tk.StringVar(value="0.85")
 
-        self.checkbox1.place(relx=0.3, rely=0.1, anchor="w")
-        self.checkbox2.place(relx=0.5, rely=0.1, anchor="w")
-        self.checkbox3.place(relx=0.7, rely=0.1, anchor="w")
-        self.checkbox_var1.trace(
-            "w", lambda name, index, mode, *args: self.select_expriment_library()
-        )
-        self.checkbox_var2.trace("w", lambda name, index, mode, *args: self.select_model_library())
-        self.select_custom_library_button = tk.Button(
-            self,
-            text=" Select Custom Library",
-            font=("Arial", "12"),
-            bg="#FFFFFF",
-            fg="black",
-            borderwidth=2,
-            relief="solid",
-            command=self.select_custom_library,
-        )
-        self.select_custom_library_button.place(relx=0.3, rely=0.20, anchor="w")
+        self._entry_row(scoring, 0, "Green atom tolerance (ppm)", self.green_var)
+        self._entry_row(scoring, 1, "Yellow atom tolerance (ppm)", self.yellow_var)
+        self._range_row(scoring, 2, "Molecular weight", self.min_mw_var, self.max_mw_var)
+        self._range_row(scoring, 3, "Carbon count", self.min_c_var, self.max_c_var)
+        self._entry_row(scoring, 4, "Maximum-core threshold", self.skeleton_var)
+        ttk.Label(
+            scoring,
+            text=(
+                "Atom colours are converted to continuous atom scores. Substructures are "
+                "ranked and accumulated; the largest qualifying union is treated as the core."
+            ),
+            style="Muted.TLabel",
+            wraplength=390,
+            justify="left",
+        ).grid(row=5, column=0, columnspan=2, sticky="ew", pady=(18, 0))
 
-        self.select_custom_library_button = tk.Button(
-            self,
-            text="Remove Custom Library",
-            font=("Arial", "12"),
-            bg="#FFFFFF",
-            fg="black",
-            borderwidth=2,
-            relief="solid",
-            command=self.delete_custom_library,
-        )
-        self.select_custom_library_button.place(relx=0.6, rely=0.20, anchor="w")
+        actions = ttk.Frame(self)
+        actions.grid(row=2, column=0, sticky="ew")
+        ttk.Button(actions, text="Back", command=self.on_back).pack(side="left")
+        ttk.Button(
+            actions,
+            text="Continue to spectrum input",
+            style="Primary.TButton",
+            command=self._continue,
+        ).pack(side="right")
 
-        self.first_toler_lalue = tk.Label(
-            self,
-            text="First Tolerance",
-            font=("Arial", "12"),
-            bg="black",
-            fg="#FFFFFF",
-            borderwidth=2,
-            relief="solid",
-            padx=5,
-            pady=2,
+    @staticmethod
+    def _entry_row(parent, row, label, variable):
+        ttk.Label(parent, text=label, style="Surface.TLabel").grid(
+            row=row, column=0, sticky="w", pady=7
         )
-        self.first_toler_lalue.config(bg="grey", fg="black")
-        self.first_toler_lalue.place(relx=0.3, rely=0.3, anchor="w")
-        self.first_toler_default = tk.StringVar(value="2.0")
-        self.first_toler_lalue_entry = tk.Entry(
-            self,
-            font=("Arial", "10"),
-            bd=2,
-            relief="solid",
-            bg="white",
-            insertwidth=2,
-            textvariable=self.first_toler_default,
-        )
-        self.first_toler_lalue_entry.place(relx=0.5, rely=0.3, anchor="w", width=100)
-        self.second_toler_lalue = tk.Label(
-            self,
-            text="Second Tolerance",
-            font=("Arial", "12"),
-            bg="black",
-            fg="#FFFFFF",
-            borderwidth=2,
-            relief="solid",
-            padx=5,
-            pady=2,
-        )
-        self.second_toler_lalue.config(bg="grey", fg="black")
-        self.second_toler_lalue.place(relx=0.3, rely=0.4, anchor="w")
-        self.second_toler_default = tk.StringVar(value="4.0")
-        self.second_toler_entry = tk.Entry(
-            self,
-            font=("Arial", "10"),
-            bd=2,
-            relief="solid",
-            bg="white",
-            insertwidth=2,
-            textvariable=self.second_toler_default,
-        )
-        self.second_toler_entry.place(relx=0.5, rely=0.4, anchor="w", width=100)
-
-        self.mw_lalue = tk.Label(
-            self,
-            text="Mass Range",
-            font=("Arial", "12"),
-            bg="black",
-            fg="#FFFFFF",
-            borderwidth=2,
-            relief="solid",
-            padx=5,
-            pady=2,
-        )
-        self.mw_lalue.config(bg="grey", fg="black")
-        self.mw_lalue.place(relx=0.3, rely=0.5, anchor="w")
-        self.min_mw_num_default = tk.StringVar(value="0")
-        self.min_entry = tk.Entry(
-            self,
-            font=("Arial", "10"),
-            bd=2,
-            relief="solid",
-            bg="white",
-            insertwidth=2,
-            textvariable=self.min_mw_num_default,
-        )
-        self.min_entry.place(relx=0.5, rely=0.5, anchor="w", width=65)
-        self.to = tk.Label(self, text="——", font=("Arial", "12"), bg="#2C3E50")
-        self.to = self.to.place(relx=0.6, rely=0.5, anchor="w")
-        self.max_mw_num_default = tk.StringVar(value="1000")
-        self.max_entry = tk.Entry(
-            self,
-            font=("Arial", "10"),
-            bd=2,
-            relief="solid",
-            bg="white",
-            insertwidth=2,
-            textvariable=self.max_mw_num_default,
-        )
-        self.max_entry.place(relx=0.68, rely=0.5, anchor="w", width=65)
-
-        self.c_num_label = tk.Label(
-            self,
-            text="Carbon Number",
-            font=("Arial", "12"),
-            bg="black",
-            fg="#FFFFFF",
-            borderwidth=2,
-            relief="solid",
-            padx=5,
-            pady=2,
-        )
-        self.c_num_label.config(bg="grey", fg="black")
-        self.c_num_label.place(relx=0.3, rely=0.6, anchor="w")
-        self.default_min_c_text = tk.StringVar(value="0")
-        self.min_c_num_entry = tk.Entry(
-            self,
-            font=("Arial", "10"),
-            bd=2,
-            relief="solid",
-            bg="white",
-            insertwidth=2,
-            textvariable=self.default_min_c_text,
-        )
-        self.min_c_num_entry.place(relx=0.5, rely=0.6, anchor="w", width=65)
-        self.to2 = tk.Label(self, text="——", font=("Arial", "16"), bg="#2C3E50")
-        self.to2.place(relx=0.6, rely=0.6, anchor="w")
-        self.default_max_c_text = tk.StringVar(value="100")
-        self.max_c_num_entry = tk.Entry(
-            self,
-            font=("Arial", "10"),
-            bd=2,
-            relief="solid",
-            bg="white",
-            insertwidth=2,
-            textvariable=self.default_max_c_text,
-        )
-        self.max_c_num_entry.place(relx=0.68, rely=0.6, anchor="w", width=65)
-
-        self.skeleton_label = tk.Label(
-            self,
-            text="Skeleton Similarity",
-            font=("Arial", "12"),
-            bg="black",
-            fg="#FFFFFF",
-            borderwidth=2,
-            relief="solid",
-            padx=5,
-            pady=2,
-        )
-        self.skeleton_label.config(bg="grey", fg="black")
-        self.skeleton_label.place(relx=0.3, rely=0.7, anchor="w")
-        self.default_skeleton_text = tk.StringVar(value="0.85")
-        self.skeleton_entry = tk.Entry(
-            self,
-            font=("Arial", "10"),
-            bd=2,
-            relief="solid",
-            bg="white",
-            insertwidth=2,
-            textvariable=self.default_skeleton_text,
-        )
-        self.skeleton_entry.place(relx=0.5, rely=0.7, anchor="w", width=65)
-
-    def get_green_yellow_minc_maxc_minmw_maxmw_skeleton(self):
-        green_threshold = float(self.first_toler_default.get())
-        yellow_threshold = float(self.second_toler_default.get())
-        min_c_num = int(self.default_min_c_text.get())
-        max_c_num = int(self.default_max_c_text.get())
-        min_mw = float(self.min_mw_num_default.get())
-        max_mw = float(self.max_mw_num_default.get())
-        skeleton_threshold = float(self.default_skeleton_text.get())
-        return (
-            green_threshold,
-            yellow_threshold,
-            min_mw,
-            max_mw,
-            min_c_num,
-            max_c_num,
-            skeleton_threshold,
+        ttk.Entry(parent, textvariable=variable, width=14).grid(
+            row=row, column=1, sticky="e", pady=7
         )
 
-    def select_custom_library(self):
-        self.usepath = self.usepath_obj.select_user_path()
-        return self.usepath
+    @staticmethod
+    def _range_row(parent, row, label, min_var, max_var):
+        ttk.Label(parent, text=label, style="Surface.TLabel").grid(
+            row=row, column=0, sticky="w", pady=7
+        )
+        range_frame = ttk.Frame(parent, style="Surface.TFrame")
+        range_frame.grid(row=row, column=1, sticky="e", pady=7)
+        ttk.Entry(range_frame, textvariable=min_var, width=7).pack(side="left")
+        ttk.Label(range_frame, text="to", style="Surface.TLabel").pack(side="left", padx=7)
+        ttk.Entry(range_frame, textvariable=max_var, width=7).pack(side="left")
 
-    def delete_custom_library(self):
-        self.usepath = []
-        return self.usepath
+    def _add_custom_library(self):
+        self.custom_paths = self.usepath_obj.select_user_path(parent=self)
+        self._update_custom_label()
 
-    def select_expriment_library(self, event=None):
-        if self.checkbox_var1.get():
+    def _clear_custom(self):
+        self.usepath_obj.user_path.clear()
+        self.custom_paths = []
+        self._update_custom_label()
+
+    def _update_custom_label(self):
+        if self.custom_paths:
+            self.custom_label.configure(
+                text="\n".join(Path(path).name for path in self.custom_paths)
+            )
+        else:
+            self.custom_label.configure(text="No custom library selected")
+
+    def _toggle_experimental(self):
+        if self.experimental_var.get():
             self.filepath_obj.select_realdata_path()
         else:
             self.filepath_obj.remove_realdata_path()
 
-    def select_model_library(self, event=None):
-        if self.checkbox_var2.get():
+    def _toggle_model(self):
+        if self.model_var.get():
             self.filepath_obj.select_model_path()
         else:
             self.filepath_obj.remove_model_path()
 
-    def select_prediction_library(self):
-        if self.checkbox_var3.get():
+    def _toggle_prediction(self):
+        if self.prediction_var.get():
             self.filepath_obj.select_prediction_path()
         else:
             self.filepath_obj.remove_prediction_path()
 
-    def goto_search_page(self):
-        self.place_forget()
-        (
-            green_threshold,
-            yellow_threshold,
-            min_mw,
-            max_mw,
-            min_c_num,
-            max_c_num,
-            skeleton_threshold,
-        ) = self.get_green_yellow_minc_maxc_minmw_maxmw_skeleton()
-        self.search_frame = SearchPage(
-            root,
-            self.goto_primary_page,
-            self.filepath_obj,
-            self.usepath,
-            green_threshold,
-            yellow_threshold,
-            skeleton_threshold,
-            min_c_num,
-            max_c_num,
-            min_mw,
-            max_mw,
-        )  # 创建搜索页面框架，但初始时隐藏
+    def _continue(self):
+        try:
+            green = float(self.green_var.get())
+            yellow = float(self.yellow_var.get())
+            min_mw, max_mw = float(self.min_mw_var.get()), float(self.max_mw_var.get())
+            min_c, max_c = int(self.min_c_var.get()), int(self.max_c_var.get())
+            skeleton = float(self.skeleton_var.get())
+            if not 0 <= green < yellow:
+                raise ValueError("Atom tolerances must satisfy 0 <= green < yellow")
+            if min_mw < 0 or min_mw > max_mw:
+                raise ValueError("Molecular-weight range must satisfy 0 <= minimum <= maximum")
+            if min_c < 0 or min_c > max_c:
+                raise ValueError("Carbon-count range must satisfy 0 <= minimum <= maximum")
+            if not 0 <= skeleton <= 1:
+                raise ValueError("Maximum-core threshold must be between 0 and 1")
+            if not (self.filepath_obj.system_path or self.custom_paths):
+                raise ValueError("Select at least one candidate library")
+        except ValueError as exc:
+            messagebox.showerror("Invalid setup", str(exc), parent=self)
+            return
 
-        self.search_frame.place(relwidth=1, relheight=1)  # 显示搜索页面
+        self.on_continue(
+            {
+                "filepath_obj": self.filepath_obj,
+                "custom_paths": list(self.custom_paths),
+                "green_threshold": green,
+                "yellow_threshold": yellow,
+                "skeleton_threshold": skeleton,
+                "min_c": min_c,
+                "max_c": max_c,
+                "min_mw": min_mw,
+                "max_mw": max_mw,
+            }
+        )
 
-    def goto_primary_page(self):
-        self.search_frame.place_forget()  # 隐藏搜索页面
-        self.place(relwidth=1, relheight=1)  # 显示当前页面
 
-    def place_forget(self):
+class SearchPage(ttk.Frame):
+    def __init__(self, master, config, on_back):
+        super().__init__(master)
+        self.config_data = config
+        self.on_back = on_back
+        self._build()
 
-        self.place(relwidth=0, relheight=0)  #
+    def _build(self):
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(1, weight=1)
+        ttk.Label(self, text="Spectrum input", style="Title.TLabel").grid(
+            row=0, column=0, sticky="w"
+        )
+        ttk.Label(
+            self,
+            text="Enter comma-separated 13C shifts. Leave unavailable DEPT fields empty.",
+            style="Subtitle.TLabel",
+        ).grid(row=0, column=0, sticky="w", pady=(42, 0))
+
+        card = ttk.Frame(self, style="Surface.TFrame", padding=20)
+        card.grid(row=1, column=0, sticky="nsew", pady=(24, 18))
+        card.columnconfigure(1, weight=1)
+        card.rowconfigure((0, 1, 2, 3), weight=1)
+        self.shift_boxes = {}
+        fields = (
+            ("all", "All 13C signals"),
+            ("up", "+DEPT-135"),
+            ("down", "-DEPT-135"),
+            ("dept90", "DEPT-90"),
+        )
+        for row, (key, label) in enumerate(fields):
+            ttk.Label(card, text=label, style="Surface.TLabel").grid(
+                row=row, column=0, sticky="nw", padx=(0, 18), pady=8
+            )
+            box = make_text(card, height=3, width=75)
+            box.grid(row=row, column=1, sticky="nsew", pady=8)
+            self.shift_boxes[key] = box
+
+        actions = ttk.Frame(self)
+        actions.grid(row=2, column=0, sticky="ew")
+        ttk.Button(actions, text="Back", command=self.on_back).pack(side="left")
+        self.search_button = ttk.Button(
+            actions,
+            text="Run analysis",
+            style="Primary.TButton",
+            command=self.search,
+        )
+        self.search_button.pack(side="right")
+
+    def search(self):
+        raw = {key: box.get("1.0", "end-1c").strip() for key, box in self.shift_boxes.items()}
+        try:
+            self._validate_shift_text(raw)
+            self.config_data["filepath_obj"].select_user_path(
+                self.config_data["custom_paths"]
+            )
+            all_paths = self.config_data["filepath_obj"].select_all_paths()
+            if not all_paths:
+                raise ValueError("No candidate library is available")
+
+            self.search_button.configure(state="disabled")
+            self.winfo_toplevel().configure(cursor="watch")
+            self.update_idletasks()
+
+            input_data = ProcesInputdata(raw["all"], raw["up"], raw["down"], raw["dept90"])
+            if input_data.match_type_state is None:
+                raise ValueError("The spectrum combination could not be interpreted")
+            sdf_result = Process_sdf_files(
+                all_paths,
+                input_data.match_type_state,
+                self.config_data["min_mw"],
+                self.config_data["max_mw"],
+                self.config_data["min_c"],
+                self.config_data["max_c"],
+            )
+            compare_data = ProductBestCompare(
+                input_data, sdf_result, self.config_data["green_threshold"]
+            )
+            score = ScoreInstitution(
+                compare_data,
+                self.config_data["yellow_threshold"],
+                self.config_data["skeleton_threshold"],
+            )
+            result_dict = DrawCompound(all_paths, score).result
+            if not result_dict:
+                raise ValueError("No candidates satisfied the selected data and filters")
+            ResultViewerApp(self.winfo_toplevel(), result_dict, callback=lambda idx: idx)
+        except Exception as exc:
+            messagebox.showerror("Analysis error", str(exc), parent=self)
+        finally:
+            self.search_button.configure(state="normal")
+            self.winfo_toplevel().configure(cursor="")
+
+    @staticmethod
+    def _validate_shift_text(values):
+        if not any(values.values()):
+            raise ValueError("Enter at least one spectrum")
+        for label, text in values.items():
+            if not text:
+                continue
+            entries = [value.strip() for value in text.replace("，", ",").split(",")]
+            if any(not value for value in entries):
+                raise ValueError(f"{label} contains an empty comma-separated value")
+            try:
+                [float(value) for value in entries]
+            except ValueError as exc:
+                raise ValueError(f"{label} contains a non-numeric chemical shift") from exc
 
 
-class DBPage(tk.Frame):
-    def __init__(self, root):
-        super().__init__(root)
-        self.configure(bg="#2C3E50")
+class DBPage(ttk.Frame):
+    def __init__(self, master):
+        super().__init__(master)
         self.folder_path = ""
-        self.creat_db_page()
+        self._build()
 
-    def creat_db_page(self):
-        generate_label = tk.Label(
-            self, text="generate db", font=("Arial", "15"), bg="black", fg="white"
+    def _build(self):
+        self.columnconfigure((0, 1), weight=1)
+        ttk.Label(self, text="Database tools", style="Title.TLabel").grid(
+            row=0, column=0, columnspan=2, sticky="w"
         )
-        generate_label.place(relx=0.4, rely=0.22, anchor="w", width=200)
-        select_folder_button = tk.Button(
+        ttk.Label(
             self,
-            text="select a folder",
-            font=("Arial", "13"),
-            bg="#FFFFFF",
-            fg="black",
-            relief="solid",
-            command=self.select_folder_path,
+            text="Validate source folders, generate SDF databases, or run structure searches.",
+            style="Subtitle.TLabel",
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(42, 0))
+
+        folder = ttk.LabelFrame(self, text="Database folder")
+        folder.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(24, 18))
+        folder.columnconfigure(0, weight=1)
+        self.folder_label = ttk.Label(
+            folder, text="No folder selected", style="Muted.TLabel", wraplength=760
         )
-        select_folder_button.config(bg="grey", fg="black")
-        select_folder_button.place(relx=0.2, rely=0.05, anchor="w", width=200)
-        delete_folder_button = tk.Button(
-            self,
-            text="delete a folder",
-            font=("Arial", "13"),
-            bg="#FFFFFF",
-            fg="black",
-            relief="solid",
-            command=self.delete_folder_path,
+        self.folder_label.grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 12))
+        ttk.Button(folder, text="Select folder…", command=self.select_folder_path).grid(
+            row=1, column=0, sticky="w"
         )
-        delete_folder_button.config(bg="grey", fg="black")
-        delete_folder_button.place(relx=0.55, rely=0.05, anchor="w", width=200)
-        label_name = tk.Label(
-            self, text="selected path :", font=("Arial", "10"), bg="#2C3E50", fg="black"
+        ttk.Button(folder, text="Clear", command=self.delete_folder_path).grid(
+            row=1, column=1, sticky="w", padx=8
         )
-        label_name.place(relx=0.2, rely=0.15, anchor="w", width=200)
-        self.file_label = tk.Text(
-            self, font=("Arial", "10"), bg="#2C3E50", fg="black", width=400, height=1
+        ttk.Button(folder, text="Check folder", command=self.check_folder).grid(
+            row=1, column=2, sticky="e", padx=8
         )
-        self.file_label.insert(tk.END, "None")
-        self.file_label.place(relx=0.55, rely=0.15, anchor="w", width=200)
-        generate_button = tk.Button(
-            self,
-            text="Generate DataBase",
-            font=("Arial", "10"),
-            bg="#FFFFFF",
-            fg="black",
+        ttk.Button(
+            folder,
+            text="Generate database",
+            style="Primary.TButton",
             command=self.generate_sdf,
-        )
-        generate_button.config(bg="grey", fg="black")
-        generate_button.place(relx=0.2, rely=0.3, anchor="w", width=200)
-        check_button = tk.Button(
-            self,
-            text="Check Folder",
-            font=("Arial", "10"),
-            bg="#FFFFFF",
-            fg="black",
-            command=self.check_folder,
-        )
-        check_button.config(bg="grey", fg="black")
-        check_button.place(relx=0.55, rely=0.3, anchor="w", width=200)
+        ).grid(row=1, column=3, sticky="e")
 
-        similar_label = tk.Label(
-            self, text="similar_search", font=("Arial", "15"), bg="black", fg="white"
-        )
-        similar_label.place(relx=0.4, rely=0.4, anchor="w", width=200)
-        similar_parameter_label = tk.Label(
-            self, text="similar_threshold :", font=("Arial", "10"), bg="#2C3E50", fg="white"
-        )
-        similar_parameter_label.place(relx=0.5, rely=0.5, anchor="w", width=200)
-
-        self.similar_value = tk.StringVar(value="0.8")
-        similar_parameter_entry = tk.Entry(
-            self,
-            font=("Arial", "10"),
-            bd=2,
-            relief="solid",
-            bg="white",
-            insertwidth=2,
-            textvariable=self.similar_value,
-        )
-        similar_parameter_entry.place(relx=0.75, rely=0.5, anchor="w", width=40)
-
-        similar_radius_parameter_label = tk.Label(
-            self, text="radius_value :", font=("Arial", "10"), bg="#2C3E50", fg="white"
-        )
-        similar_radius_parameter_label.place(relx=0.05, rely=0.5, anchor="w", width=200)
-        self.radius_value = tk.StringVar(value="3")
-        similar_parameter_entry = tk.Entry(
-            self,
-            font=("Arial", "10"),
-            bd=2,
-            relief="solid",
-            bg="white",
-            insertwidth=2,
-            textvariable=self.radius_value,
-        )
-        similar_parameter_entry.place(relx=0.3, rely=0.5, anchor="w", width=40)
-
-        smiles_label = tk.Label(
-            self, text="target_smiles :", font=("Arial", "10"), bg="#2C3E50", fg="white"
-        )
-        smiles_label.place(relx=0.05, rely=0.6, anchor="w", width=200)
-        self.smiles_str = tk.StringVar(value="None")
-        smiles_entry = tk.Entry(
-            self,
-            font=("Arial", "10"),
-            bd=2,
-            relief="solid",
-            bg="white",
-            insertwidth=2,
-            textvariable=self.smiles_str,
-        )
-        smiles_entry.place(relx=0.3, rely=0.6, anchor="w", width=200)
-
-        similar_search_button = tk.Button(
-            self,
-            text="Search",
-            font=("Arial", "13"),
-            bg="#FFFFFF",
-            fg="black",
+        similar = ttk.LabelFrame(self, text="Similarity search")
+        similar.grid(row=2, column=0, sticky="nsew", padx=(0, 10))
+        similar.columnconfigure(1, weight=1)
+        self.radius_var = tk.StringVar(value="3")
+        self.similarity_var = tk.StringVar(value="0.8")
+        self.smiles_var = tk.StringVar()
+        self._db_entry(similar, 0, "Radius", self.radius_var)
+        self._db_entry(similar, 1, "Similarity threshold", self.similarity_var)
+        self._db_entry(similar, 2, "Target SMILES", self.smiles_var)
+        ttk.Button(
+            similar,
+            text="Run similarity search",
+            style="Primary.TButton",
             command=self.similar_search,
-        )
-        similar_search_button.config(bg="grey", fg="black")
-        similar_search_button.place(relx=0.7, rely=0.6, anchor="w", width=80)
+        ).grid(row=3, column=0, columnspan=2, sticky="e", pady=(16, 0))
 
-        substructure_search = tk.Label(
-            self, text="substructure_search", font=("Arial", "15"), bg="black", fg="white"
-        )
-        substructure_search.place(relx=0.4, rely=0.7, anchor="w", width=200)
-        sub_smiles_label = tk.Label(
-            self, text="sub_smiles :", font=("Arial", "10"), bg="#2C3E50", fg="white"
-        )
-        sub_smiles_label.place(relx=0.05, rely=0.8, anchor="w", width=200)
-        self.sub_smiles = tk.StringVar(value="None")
-        sub_smiles_entry = tk.Entry(
-            self,
-            font=("Arial", "10"),
-            bd=2,
-            relief="solid",
-            bg="white",
-            insertwidth=2,
-            textvariable=self.sub_smiles,
-        )
-        sub_smiles_entry.place(relx=0.3, rely=0.8, anchor="w", width=200)
-        sub_search_button = tk.Button(
-            self,
-            text="Search",
-            font=("Arial", "13"),
-            bg="grey",
-            fg="black",
+        substructure = ttk.LabelFrame(self, text="Substructure search")
+        substructure.grid(row=2, column=1, sticky="nsew", padx=(10, 0))
+        substructure.columnconfigure(1, weight=1)
+        self.sub_smiles_var = tk.StringVar()
+        self._db_entry(substructure, 0, "Query SMILES", self.sub_smiles_var)
+        ttk.Label(
+            substructure,
+            text="Returns database molecules containing the specified query structure.",
+            style="Muted.TLabel",
+            wraplength=360,
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(12, 0))
+        ttk.Button(
+            substructure,
+            text="Run substructure search",
+            style="Primary.TButton",
             command=self.get_substructure_search,
+        ).grid(row=2, column=0, columnspan=2, sticky="e", pady=(16, 0))
+
+    @staticmethod
+    def _db_entry(parent, row, label, variable):
+        ttk.Label(parent, text=label, style="Surface.TLabel").grid(
+            row=row, column=0, sticky="w", pady=6, padx=(0, 10)
         )
-        sub_search_button.config(bg="grey", fg="black")
-        sub_search_button.place(relx=0.7, rely=0.8, anchor="w", width=80)
+        ttk.Entry(parent, textvariable=variable).grid(row=row, column=1, sticky="ew", pady=6)
 
     def select_folder_path(self):
-        self.folder_path_obj = Add_file_path()
-        self.folder_path = self.folder_path_obj.select_user_path()
-        self.update_label()
+        self.folder_path = Add_file_path().select_user_path(parent=self)
+        self.folder_label.configure(text=self.folder_path or "No folder selected")
 
     def delete_folder_path(self):
         self.folder_path = ""
-        self.update_label()
+        self.folder_label.configure(text="No folder selected")
 
-    def update_label(self):
-        self.file_label.delete(1.0, tk.END)  # 删除现有内容
-        self.file_label.insert(tk.END, self.folder_path)
+    def _require_folder(self):
+        if not self.folder_path:
+            raise ValueError("Select a database folder first")
 
     def check_folder(self):
-        if self.folder_path == "":
-            print("No folder selected")
-        else:
-            self.check_folder_obj = DBOrganization(self.folder_path)
-            self.check_folder_obj.check_sdf_excel()
-            self.check_folder_obj.check_sdf_mol()
-            print("completed")
+        try:
+            self._require_folder()
+            organizer = DBOrganization(self.folder_path)
+            organizer.check_sdf_excel()
+            organizer.check_sdf_mol()
+            messagebox.showinfo("Database tools", "Folder validation completed", parent=self)
+        except Exception as exc:
+            messagebox.showerror("Database error", str(exc), parent=self)
 
     def generate_sdf(self):
-        if self.folder_path == "":
-            print("No folder selected")
-        else:
-            self.check_folder_obj = DBOrganization(self.folder_path)
-            self.check_folder_obj.write_sdf()
-            print("completed")
+        try:
+            self._require_folder()
+            DBOrganization(self.folder_path).write_sdf()
+            messagebox.showinfo("Database tools", "Database generation completed", parent=self)
+        except Exception as exc:
+            messagebox.showerror("Database error", str(exc), parent=self)
 
     def similar_search(self):
-        radius = 3
         try:
-            radius = int(self.radius_value.get())
-        except ValueError:
-            print("radius value must be an integer")
-        smiles = self.smiles_str.get()
-        threshold = float(self.similar_value.get())
-        similarsearch_obj = SimilarSearch(smiles, self.folder_path, threshold, radius)
-        similarsearch_obj.get_similars()
+            self._require_folder()
+            radius = int(self.radius_var.get())
+            threshold = float(self.similarity_var.get())
+            if radius <= 0 or not 0 <= threshold <= 1:
+                raise ValueError("Radius must be positive and similarity must be in [0, 1]")
+            if not self.smiles_var.get().strip():
+                raise ValueError("Enter a target SMILES string")
+            SimilarSearch(
+                self.smiles_var.get().strip(), self.folder_path, threshold, radius
+            ).get_similars()
+        except Exception as exc:
+            messagebox.showerror("Similarity search", str(exc), parent=self)
 
     def get_substructure_search(self):
-        smiles = self.sub_smiles.get()
-        sub_search_obj = GetSubstructures(smiles, self.folder_path)
-        sub_search_obj.get_substructures_sdf()
+        try:
+            self._require_folder()
+            smiles = self.sub_smiles_var.get().strip()
+            if not smiles:
+                raise ValueError("Enter a query SMILES string")
+            GetSubstructures(smiles, self.folder_path).get_substructures_sdf()
+        except Exception as exc:
+            messagebox.showerror("Substructure search", str(exc), parent=self)
 
 
-class SearchPage(tk.Frame):
-    def __init__(
-        self,
-        root,
-        callback,
-        filepath_obj,
-        usepath,
-        green_threshold_obj,
-        yellow_threshold_obj,
-        skeleton_threshold_obj,
-        min_c_num_obj,
-        max_c_num_obj,
-        min_mw_obj,
-        max_mw_obj,
-    ):
-        super().__init__(root)
-        self.configure(bg="#2C3E50")
-        self.callback = callback
-        self.filepath_obj = filepath_obj
-        self.usepath_obj = usepath
-        self.green_threshold_obj = green_threshold_obj
-        self.yellow_threshold_obj = yellow_threshold_obj
-        self.skeleton_threshold_obj = skeleton_threshold_obj
-        self.max_c_num_obj = max_c_num_obj
-        self.min_c_num_obj = min_c_num_obj
-        self.max_mw_obj = max_mw_obj
-        self.min_mw_obj = min_mw_obj
-        self.creat_search_page()
-
-    def creat_search_page(self):
-        self.back_button = tk.Button(
-            self, text="Back", font=("Arial", "16"), bg="grey", command=self.callback
-        )
-        self.back_button.place(relx=0.2, rely=0.85, anchor="center")
-        self.search_button = tk.Button(
-            self, text="Search", font=("Arial", "16"), bg="grey", command=self.search
-        )
-        self.search_button.place(relx=0.8, rely=0.85, anchor="center")
-
-        self.all_c_label = tk.Label(
-            self,
-            text="All_C",
-            font=("Arial", "13"),
-            bg="black",
-            fg="#FFFFFF",
-            borderwidth=2,
-            relief="solid",
-            padx=5,
-            pady=2,
-        )
-        self.all_c_label.place(relx=0.1, rely=0.1, anchor="center")
-        self.all_c_label_box = tk.Text(
-            self,
-            font=("Arial", "10"),
-            bd=2,
-            relief="solid",
-            bg="#CCCCCC",
-            insertwidth=2,
-            width=70,
-            height=5,
-        )
-        self.all_c_label_box.place(relx=0.5, rely=0.1, anchor="center")
-
-        self.up_dept135_label = tk.Label(
-            self,
-            text="Up_DEPT135",
-            font=("Arial", "10"),
-            bg="black",
-            fg="white",
-            borderwidth=2,
-            relief="solid",
-            padx=5,
-            pady=2,
-        )
-        self.up_dept135_label.place(relx=0.1, rely=0.3, anchor="center")
-        self.up_dept135_label_box = tk.Text(
-            self,
-            font=("Arial", "10"),
-            bd=2,
-            relief="solid",
-            bg="#CCCCCC",
-            insertwidth=2,
-            width=70,
-            height=5,
-        )
-        self.up_dept135_label_box.place(relx=0.5, rely=0.3, anchor="center")
-        self.down_dept135_label = tk.Label(
-            self,
-            text="Down_DEPT135",
-            font=("Arial", "10"),
-            bg="black",
-            fg="#FFFFFF",
-            borderwidth=2,
-            relief="solid",
-            padx=5,
-            pady=2,
-        )
-        self.down_dept135_label.place(relx=0.1, rely=0.5, anchor="center")
-        self.down_dept135_label_box = tk.Text(
-            self,
-            font=("Arial", "10"),
-            bd=2,
-            relief="solid",
-            bg="#CCCCCC",
-            insertwidth=2,
-            width=70,
-            height=5,
-        )
-        self.down_dept135_label_box.place(relx=0.5, rely=0.5, anchor="center")
-        self.dept90_label = tk.Label(
-            self,
-            text="DEPT90",
-            font=("Arial", "10"),
-            bg="black",
-            fg="#FFFFFF",
-            borderwidth=2,
-            relief="solid",
-            padx=5,
-            pady=2,
-        )
-        self.dept90_label.place(relx=0.1, rely=0.7, anchor="center")
-        self.dept90_label_box = tk.Text(
-            self,
-            font=("Arial", "10"),
-            bd=2,
-            relief="solid",
-            bg="#CCCCCC",
-            insertwidth=2,
-            width=70,
-            height=5,
-        )
-        self.dept90_label_box.place(relx=0.5, rely=0.7, anchor="center")
-
-    def search(self):
-        allc = self.all_c_label_box.get(1.0, "end-1c")
-        up_dept135 = self.up_dept135_label_box.get(1.0, "end-1c")
-        down_dept135 = self.down_dept135_label_box.get(1.0, "end-1c")
-        dept90 = self.dept90_label_box.get(1.0, "end-1c")
-        self.filepath_obj.select_user_path(self.usepath_obj)
-        all_paths = self.filepath_obj.select_all_paths()
-
-        input_data = ProcesInputdata(allc, up_dept135, down_dept135, dept90)
-        c_type = input_data.match_type_state
-
-        sdf_result = Process_sdf_files(
-            all_paths,
-            c_type,
-            self.min_mw_obj,
-            self.max_mw_obj,
-            self.min_c_num_obj,
-            self.max_c_num_obj,
-        )
-        compare_data = ProductBestCompare(input_data, sdf_result, self.green_threshold_obj)
-        score = ScoreInstitution(
-            compare_data, self.yellow_threshold_obj, self.skeleton_threshold_obj
-        )
-        img_result = DrawCompound(all_paths, score)
-        result_dict = img_result.result
-        result_page = ResultViewerApp(
-            root, result_dict, callback=lambda idx: print(f"Global index clicked: {idx}")
-        )
-        result_page.mainloop()
-
-
-class QueryPage(tk.Frame):
-    def __init__(self, root):
-        super().__init__(root)
-        self.configure(bg="#2C3E50")
-        self.creat_help_page()
-
-    def creat_help_page(self):
-        pass
-
-
-class AboutPage(tk.Frame):
-    def __init__(self, root):
-        super().__init__(root)
-        self.configure(bg="#2C3E50")
-        self.creat_about_page()
-
-    def creat_about_page(self):
-        self.label1 = tk.Label(
-            self,
-            bg="#2C3E50",
-            text="Team：Natural Products Research and \n Application Team of Yunnan University",
-            font=("Arial", 15),
-            fg="black",
-        )
-        self.label1.place(relx=0.5, rely=0.15, anchor="center")
-        self.label2 = tk.Label(
-            self, bg="#2C3E50", text="Version：ReCQC-1.0.0", font=("Arial", 15), fg="black"
-        )
-        self.label2.place(relx=0.5, rely=0.25, anchor="center")
-        self.label3 = tk.Label(
-            self, bg="#2C3E50", text="Email：2638614209@qq.com", font=("Arial", 15), fg="black"
-        )
-        self.label3.place(relx=0.5, rely=0.35, anchor="center")
+class AboutPage(ttk.Frame):
+    def __init__(self, master):
+        super().__init__(master)
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(0, weight=1)
+        card = ttk.Frame(self, style="Surface.TFrame", padding=(55, 45))
+        card.grid(row=0, column=0, sticky="nsew", padx=100, pady=70)
+        card.columnconfigure(0, weight=1)
+        ttk.Label(
+            card,
+            text="ReCQC 1.0",
+            style="Surface.TLabel",
+            font=("Segoe UI Semibold", 28),
+        ).grid(row=0, column=0, pady=(0, 10))
+        ttk.Label(
+            card,
+            text="13C NMR mixture dereplication with maximum-core substructure scoring",
+            style="Muted.TLabel",
+        ).grid(row=1, column=0, pady=(0, 24))
+        ttk.Label(
+            card,
+            text=(
+                "Natural Products Research and Application Team\n"
+                "Yunnan University\n\n"
+                "Contact: 2638614209@qq.com"
+            ),
+            style="Surface.TLabel",
+            justify="center",
+        ).grid(row=2, column=0)
 
 
 if __name__ == "__main__":
     root = tk.Tk()
     Main(root)
+    root.mainloop()

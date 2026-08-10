@@ -136,25 +136,23 @@ class CombinedScorerGUI:
         :param final_weights: 最终权重 (c_weight, ch_weight)
         :param db_path: 数据库路径
         """
-        # 初始化数据库
         self.db_path = db_path
-        processor = SDFBatchProcessor(db_path)
-        processor.process_files(sdf_files)
-        extractor = CarbonCoordinateExtractor(db_path)
-        extractor.process_all()  # 生成carbon_h_coordinates表
-
-        # 参数存储
+        self.sdf_files = sdf_files
         self.c_range = c_range
         self.fw_range = fw_range
         self.c_mode = c_mode
         self.c_data = c_data or ({0: [], 1: [], 2: [], 3: []} if c_mode == "typed" else [])
         self.carbon_score_mode = carbon_score_mode
         self.carbon_global_thresholds = carbon_global_thresholds
-        self.carbon_fine_ranges = carbon_fine_ranges or [
-            ((0, 50), 1.0, 2.0),
-            ((50, 150), 2.0, 3.0),
-            ((150, 300), 3.0, 4.0),
-        ]
+        self.carbon_fine_ranges = (
+            carbon_fine_ranges
+            if carbon_fine_ranges is not None
+            else [
+                ((0, 50), 1.0, 2.0),
+                ((50, 150), 2.0, 3.0),
+                ((150, 300), 3.0, 4.0),
+            ]
+        )
         self.env_level, self.self_weight, self.env_weight = env_params
         self.ch_mode = ch_mode
         self.CH_merge = CH_merge
@@ -164,6 +162,11 @@ class CombinedScorerGUI:
         self.c_weight, self.ch_weight = final_weights
 
         self._validate_parameters()
+        self.import_report = SDFBatchProcessor.process_files_atomically(
+            sdf_files, db_path
+        )
+        extractor = CarbonCoordinateExtractor(db_path)
+        extractor.process_all()  # 生成carbon_h_coordinates表
 
     def _default_ch_data(self):
         """生成默认CH数据结构"""
@@ -173,15 +176,19 @@ class CombinedScorerGUI:
 
     def _validate_parameters(self):
         """综合参数校验"""
-        if self.c_range[0] > self.c_range[1]:
+        if self.c_range[0] < 0 or self.c_range[0] > self.c_range[1]:
             raise ValueError(
                 "The carbon number range is invalid, and the starting value needs to be less than the end value"
             )
-        if self.fw_range[0] > self.fw_range[1]:
+        if self.fw_range[0] < 0 or self.fw_range[0] > self.fw_range[1]:
             raise ValueError(
                 "The molecular weight range is invalid, and the start value needs to be less than the end value"
             )
         # 碳数据
+        if self.c_mode not in {"typed", "untyped"}:
+            raise ValueError("The carbon matching mode must be typed or untyped")
+        if self.C_merge not in {"Y", "N"}:
+            raise ValueError("C_merge must be Y or N")
         if self.c_mode == "typed" and not isinstance(self.c_data, dict):
             raise ValueError("The type pattern requires dictionary-formatted data")
         if self.c_mode == "untyped" and not isinstance(self.c_data, list):
@@ -193,22 +200,30 @@ class CombinedScorerGUI:
         if self.carbon_score_mode == "global":
             if len(self.carbon_global_thresholds) != 2:
                 raise ValueError("The global mode requires two thresholds")
-            if self.carbon_global_thresholds[0] >= self.carbon_global_thresholds[1]:
-                raise ValueError("The green threshold must be less than the yellow threshold")
+            if not 0 <= self.carbon_global_thresholds[0] < self.carbon_global_thresholds[1]:
+                raise ValueError("Global thresholds must satisfy 0 <= green < yellow")
 
         if self.carbon_score_mode == "fine":
             for r in self.carbon_fine_ranges:
                 (low, high), g, y = r
-                if low >= high or g >= y:
+                if low >= high or not 0 <= g < y:
                     raise ValueError(f"Invalid granular range: {r}")
 
         # 环境参数
         if self.env_level not in {1, 2, 3}:
             raise ValueError("The environment level must be 1-3")
+        if not (0 <= self.self_weight <= 1 and 0 <= self.env_weight <= 1):
+            raise ValueError("Environmental weights must be between 0 and 1")
         if abs(self.self_weight + self.env_weight - 1.0) > 1e-6:
             raise ValueError("The sum of environmental weights must be 1")
 
         # CH数据
+        if self.ch_mode not in {1, 2, 3}:
+            raise ValueError("The CH mode must be 1-3")
+        if self.CH_merge not in {"Y", "N"}:
+            raise ValueError("CH_merge must be Y or N")
+        if any(tolerance <= 0 for tolerance in (self.c_tol, self.h_tol)):
+            raise ValueError("C and H tolerances must be positive")
         if self.ch_mode == 1 and not {"All_type"}.issubset(self.ch_data):
             raise ValueError("Mode 1 requires All_type key")
         if self.ch_mode == 2 and not {"type13", "type2"}.issubset(self.ch_data):
@@ -217,6 +232,8 @@ class CombinedScorerGUI:
             raise ValueError("Mode 3 requires all classification keys")
 
         # 最终权重
+        if not (0 <= self.c_weight <= 1 and 0 <= self.ch_weight <= 1):
+            raise ValueError("Final weights must be between 0 and 1")
         if abs((self.c_weight + self.ch_weight) - 1.0) > 1e-6:
             raise ValueError("The final sum of weights must be 1")
 
@@ -338,6 +355,13 @@ class CombinedScorerGUI:
 
     def _color_to_rgb(self, color_str: str) -> tuple:
         """HEX颜色转RGB元组"""
+        named_colors = {
+            "green": (0.2, 0.8, 0.2),
+            "yellow": (1.0, 0.85, 0.2),
+            "red": (0.9, 0.2, 0.2),
+        }
+        if color_str in named_colors:
+            return named_colors[color_str]
         if color_str.startswith("#"):
             return (
                 int(color_str[1:3], 16) / 255.0,
@@ -395,7 +419,7 @@ class CombinedScorerGUI:
             highlight_atoms=[c["index"] for c in carbons],
             highlight_colors=[self._color_to_rgb(c["color"]) for c in carbons],
             labels={c["index"]: str(c["index"]) for c in carbons},
-            filename=f"{output_dir}/{name}_c_indices.png",
+            filename=os.path.join(output_dir, f"mol_{mol_id}_c_indices.png"),
         )
         self._draw_labeled_molecule(
             mol=mol,
@@ -404,14 +428,14 @@ class CombinedScorerGUI:
             labels={
                 c["index"]: f"{c['db_shift']:.1f}" for c in carbons if c.get("db_shift") is not None
             },
-            filename=f"{output_dir}/{name}_c_db_shifts.png",
+            filename=os.path.join(output_dir, f"mol_{mol_id}_c_db_shifts.png"),
         )
         self._draw_labeled_molecule(
             mol=mol,
             highlight_atoms=[c["index"] for c in carbons],
             highlight_colors=[self._color_to_rgb(c["color"]) for c in carbons],
             labels={c["index"]: f"{c['user_shift']:.1f}" for c in carbons},
-            filename=f"{output_dir}/{name}_c_user_shifts.png",
+            filename=os.path.join(output_dir, f"mol_{mol_id}_c_user_shifts.png"),
         )
 
     def _generate_ch_match_plots(self, conn, mol_id, name, output_dir):
@@ -456,7 +480,7 @@ class CombinedScorerGUI:
             self._plot_ch_coordinates(
                 points=lib_points,
                 title=f"Library CH Matches: {name} (Total: {len(lib_points)})",
-                filename=f"{output_dir}/{name}_ch_library.png",
+                filename=os.path.join(output_dir, f"mol_{mol_id}_ch_library.png"),
                 is_user=False,
             )
 
@@ -464,7 +488,7 @@ class CombinedScorerGUI:
             self._plot_ch_coordinates(
                 points=user_points,
                 title=f"User CH Matches: {name} (Total: {len(user_points)})",
-                filename=f"{output_dir}/{name}_ch_user.png",
+                filename=os.path.join(output_dir, f"mol_{mol_id}_ch_user.png"),
                 is_user=True,
             )
 
@@ -517,7 +541,9 @@ class CombinedScorerGUI:
         plt.savefig(filename, dpi=300, bbox_inches="tight")
         plt.close()
 
-    def _plot_carbon_visuals(self, mol: Chem.Mol, carbons: List[Dict], name: str, output_dir: str):
+    def _plot_carbon_visuals(
+        self, mol: Chem.Mol, carbons: List[Dict], mol_id: int, output_dir: str
+    ):
         """Generate three perspective visualizations for carbon matches"""
         # 1. Atomic Index View
         self._draw_labeled_molecule(
@@ -525,7 +551,7 @@ class CombinedScorerGUI:
             highlight_atoms=[c["index"] for c in carbons],
             highlight_colors=[self._color_to_rgb(c["color"]) for c in carbons],
             labels={c["index"]: str(c["index"]) for c in carbons},
-            filename=f"{output_dir}/{name}_carbon_indices.png",
+            filename=os.path.join(output_dir, f"mol_{mol_id}_carbon_indices.png"),
         )
 
         # 2. Database Shift View
@@ -534,7 +560,7 @@ class CombinedScorerGUI:
             highlight_atoms=[c["index"] for c in carbons],
             highlight_colors=[self._color_to_rgb(c["color"]) for c in carbons],
             labels={c["index"]: f"{c['db_shift']:.1f}" for c in carbons},
-            filename=f"{output_dir}/{name}_carbon_db_shifts.png",
+            filename=os.path.join(output_dir, f"mol_{mol_id}_carbon_db_shifts.png"),
         )
 
         # 3. User Shift View
@@ -543,7 +569,7 @@ class CombinedScorerGUI:
             highlight_atoms=[c["index"] for c in carbons],
             highlight_colors=[self._color_to_rgb(c["color"]) for c in carbons],
             labels={c["index"]: f"{c['user_shift']:.1f}" for c in carbons},
-            filename=f"{output_dir}/{name}_carbon_user_shifts.png",
+            filename=os.path.join(output_dir, f"mol_{mol_id}_carbon_user_shifts.png"),
         )
 
     def _plot_coordinate_scatter(self, points: List[Tuple], label: str, color: str):
@@ -722,7 +748,7 @@ class CombinedResultViewer:
         item_frame = ttk.Frame(self.grid_frame, relief="groove", borderwidth=1)
 
         # 图片展示（保持200x200尺寸）
-        img_path = f"{self.output_dir}/{name}_c_indices.png"
+        img_path = os.path.join(self.output_dir, f"mol_{mol_id}_c_indices.png")
         if os.path.exists(img_path):
             img = Image.open(img_path).resize((200, 200), Image.LANCZOS)
             photo = ImageTk.PhotoImage(img)
@@ -805,7 +831,7 @@ class CombinedResultViewer:
                 text=text,
                 variable=self.carbon_img_type,
                 value=img_type,
-                command=lambda: self.update_carbon_img(mol_name),
+                command=lambda: self.update_carbon_img(mol_id),
                 bg="#2C3E50",
                 fg="white",
             ).pack(side=tk.LEFT)
@@ -813,21 +839,21 @@ class CombinedResultViewer:
         # 碳图表显示
         self.carbon_img_label = tk.Label(left_panel, bg="#2C3E50")
         self.carbon_img_label.pack(expand=True)
-        self.update_carbon_img(mol_name)
+        self.update_carbon_img(mol_id)
 
         # 右侧CH图表区域
         right_panel = tk.Frame(main_frame, bg="#2C3E50")
         right_panel.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
 
         # CH库匹配图
-        ch_lib_path = f"{self.output_dir}/{mol_name}_ch_library.png"
+        ch_lib_path = os.path.join(self.output_dir, f"mol_{mol_id}_ch_library.png")
         if os.path.exists(ch_lib_path):
             img = Image.open(ch_lib_path).resize((600, 300), Image.LANCZOS)
             self.ch_lib_photo = ImageTk.PhotoImage(img)
             tk.Label(right_panel, image=self.ch_lib_photo, bg="#2C3E50").pack(pady=5)
 
         # CH用户匹配图
-        ch_user_path = f"{self.output_dir}/{mol_name}_ch_user.png"
+        ch_user_path = os.path.join(self.output_dir, f"mol_{mol_id}_ch_user.png")
         if os.path.exists(ch_user_path):
             img = Image.open(ch_user_path).resize((600, 300), Image.LANCZOS)
             self.ch_user_photo = ImageTk.PhotoImage(img)
@@ -855,10 +881,10 @@ class CombinedResultViewer:
         # 加载数据
         self.load_carbon_data(mol_id)
 
-    def update_carbon_img(self, mol_name):
+    def update_carbon_img(self, mol_id):
         """更新碳图表显示"""
         img_type = self.carbon_img_type.get()
-        img_path = f"{self.output_dir}/{mol_name}_c_{img_type}.png"
+        img_path = os.path.join(self.output_dir, f"mol_{mol_id}_c_{img_type}.png")
 
         if os.path.exists(img_path):
             img = Image.open(img_path).resize((500, 500), Image.LANCZOS)

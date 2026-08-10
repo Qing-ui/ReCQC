@@ -1,7 +1,11 @@
 import json
 import os
+import queue
 import re
+import threading
 import tkinter as tk
+from datetime import datetime
+from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from CarbonScorerResult import *
@@ -75,6 +79,8 @@ class BaseModeFrame(ttk.Frame):
         super().__init__(master)
         self.mode_name = mode_name
         self.file_selector = SDFFileSelector()
+        self._analysis_running = False
+        self._analysis_queue = queue.Queue()
         self.create_widgets()
         self.db_path = "chem_data.db"
 
@@ -90,12 +96,14 @@ class BaseModeFrame(ttk.Frame):
         self.create_parameters()
 
         self.btn_frame = ttk.Frame(self)
-        ttk.Button(self.btn_frame, text="Start the analysis", command=self.start_analysis).pack(
-            side=tk.LEFT, padx=5
+        self.start_button = ttk.Button(
+            self.btn_frame, text="Start the analysis", command=self.start_analysis
         )
-        ttk.Button(self.btn_frame, text="Reset parameter", command=self.reset_parameters).pack(
-            side=tk.LEFT
+        self.start_button.pack(side=tk.LEFT, padx=5)
+        self.reset_button = ttk.Button(
+            self.btn_frame, text="Reset parameter", command=self.reset_parameters
         )
+        self.reset_button.pack(side=tk.LEFT)
         self.btn_frame.pack(pady=10)
 
     def select_files(self):
@@ -109,18 +117,90 @@ class BaseModeFrame(ttk.Frame):
         raise NotImplementedError("An input validation method must be implemented")
 
     def start_analysis(self):
-        if self.validate_input():
-            self.run_analysis()
+        if self._analysis_running or not self.validate_input():
+            return
+        owner = getattr(self.master, "analysis_owner", None)
+        if owner is not None and owner is not self:
+            messagebox.showerror("Analysis in progress", "Another analysis is already running")
+            return
+        try:
+            config = self.prepare_analysis()
+        except Exception as exc:
+            messagebox.showerror("Input error", str(exc))
+            return
 
-    def run_analysis(self):
+        self._analysis_running = True
+        self.master.analysis_owner = self
+        self.start_button.config(state=tk.DISABLED)
+        self.reset_button.config(state=tk.DISABLED)
+        threading.Thread(
+            target=self._analysis_worker, args=(config,), daemon=True
+        ).start()
+        self.after(100, self._poll_analysis_queue)
+
+    def prepare_analysis(self):
+        raise NotImplementedError("Analysis configuration must be implemented")
+
+    def execute_analysis(self, config):
         raise NotImplementedError("Analytical methods must be implemented")
+
+    def _analysis_worker(self, config):
+        try:
+            payload = self.execute_analysis(config)
+        except Exception as exc:
+            self._analysis_queue.put(("error", str(exc)))
+        else:
+            self._analysis_queue.put(("success", payload))
+
+    def _poll_analysis_queue(self):
+        try:
+            status, payload = self._analysis_queue.get_nowait()
+        except queue.Empty:
+            if self._analysis_running:
+                self.after(100, self._poll_analysis_queue)
+            return
+
+        if status == "error":
+            self._set_analysis_idle()
+            messagebox.showerror("Analysis error", payload)
+            return
+        try:
+            self.show_analysis_results(payload)
+        except Exception as exc:
+            messagebox.showerror("Result display error", str(exc))
+        finally:
+            self._set_analysis_idle()
+
+    def _set_analysis_idle(self):
+        self._analysis_running = False
+        self.start_button.config(state=tk.NORMAL)
+        self.reset_button.config(state=tk.NORMAL)
+        if getattr(self.master, "analysis_owner", None) is self:
+            self.master.analysis_owner = None
+
+    def show_analysis_results(self, payload):
+        raise NotImplementedError("Result display must be implemented")
+
+    @staticmethod
+    def replace_entry(entry, value):
+        entry.delete(0, tk.END)
+        entry.insert(0, str(value))
+
+    @staticmethod
+    def create_run_output_dir(base_dir):
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        output_dir = Path(base_dir) / stamp
+        output_dir.mkdir(parents=True, exist_ok=False)
+        return str(output_dir)
+
+    @staticmethod
+    def save_import_report(report, output_dir):
+        report_path = Path(output_dir) / "import_report.json"
+        with report_path.open("w", encoding="utf-8") as handle:
+            json.dump(report, handle, ensure_ascii=False, indent=2)
 
     def reset_parameters(self):
         raise NotImplementedError("The reset method must be implemented")
-
-    def show_results(self, results):
-        pass
-
 
 class CombinedModeFrame(BaseModeFrame):
     """Joint matching mode interface"""
@@ -447,52 +527,15 @@ class CombinedModeFrame(BaseModeFrame):
         try:
             if not self.file_selector.selected_files:
                 raise ValueError("Please select the SDF file first")
-
-            if self.c_mode.get() == "typed":
-                for label in ["    All_C   ", "+Dept_135", " -Dept_135", "  Dept_90 "]:
-                    entry = self.typed_params[label]
-                    text = (
-                        entry.get("1.0", tk.END).strip()
-                        if isinstance(entry, tk.Text)
-                        else entry.get().strip()
-                    )
-                    if not text:
-                        raise ValueError(f"{label.strip()} cannot be empty")
-            else:
-                text = self.global_entry.get("1.0", tk.END).strip().replace("，", ",")
-                if not text:
-                    raise ValueError("Global mode requires a list of displacements")
-
-            if not (self.c_min.get().isdigit() and self.c_max.get().isdigit()):
-                raise ValueError("The carbon number range must be an integer")
-
-            current_mode = int(self.hmqc_mode.get())
-            required_fields = {
-                1: ["All_type"],
-                2: ["type13", "type2"],
-                3: ["type1", "type2", "type3"],
-            }[current_mode]
-
-            pattern = r"^\(\s*(?:\d+\.?\d*|\.\d+)\s*,\s*(?:\d+\.?\d*|\.\d+)\s*\)(?:[,\s]*\(\s*(?:\d+\.?\d*|\.\d+)\s*,\s*(?:\d+\.?\d*|\.\d+)\s*\))*$"
-
-            for field in required_fields:
-                text = self.point_groups[field].get("1.0", tk.END).strip()
-                # 统一符号格式
-                text = text.replace("，", ",").replace("（", "(").replace("）", ")")
-                if not text:
-                    raise ValueError(f"{field} cannot be empty")
-                if not re.match(pattern, text):
-                    raise ValueError(
-                        f"{field} format error, should be (numbers, numbers) list, support decimals, do not support negative numbers"
-                    )
+            self.prepare_analysis()
             return True
         except Exception as e:
             messagebox.showerror("Input error", str(e))
             return False
 
     def reset_parameters(self):
-
         self.c_mode.set("typed")
+        self.c_merge.set("N")
         self.toggle_c_params()
 
         for entry in self.typed_params.values():
@@ -500,40 +543,29 @@ class CombinedModeFrame(BaseModeFrame):
 
         self.global_entry.delete("1.0", tk.END)
 
-        self.c_min.delete(0, tk.END)
-        self.c_min.insert(0, "10")
-        self.c_max.delete(0, tk.END)
-        self.c_max.insert(0, "30")
-        self.m_min.delete(0, tk.END)
-        self.m_min.insert(0, "100")
-        self.m_max.delete(0, tk.END)
-        self.m_max.insert(0, "500")
+        self.replace_entry(self.c_min, 5)
+        self.replace_entry(self.c_max, 30)
+        self.replace_entry(self.m_min, 100)
+        self.replace_entry(self.m_max, 500)
         self.env_level.set(1)
-        self.self_weight.delete(0, tk.END)
-        self.self_weight.insert(0, "0.7")
+        self.replace_entry(self.self_weight, 0.7)
         self.update_env_weight()
         self.score_mode.set("global")
         self.toggle_score_mode()
-        self.green_thresh.delete(0, tk.END)
-        self.green_thresh.insert(0, "0.5")
-        self.yellow_thresh.delete(0, tk.END)
-        self.yellow_thresh.insert(0, "2.0")
+        self.replace_entry(self.green_thresh, 0.5)
+        self.replace_entry(self.yellow_thresh, 2.0)
 
         for row in self.range_rows.copy():
             self.remove_range_row(row["frame"])
         self.add_range_row((0, 220), 1, 3)  # 添加默认范围
 
         self.hmqc_mode.current(1)
+        self.ch_merge.set("N")
         self.create_hmqc_input_groups()
-        self.c_tol.delete(0, tk.END)
-        self.c_tol.insert(0, "1.0")
-        self.h_tol.delete(0, tk.END)
-        self.h_tol.insert(0, "0.2")
-
-        self.c_weight.delete(0, tk.END)
-        self.c_weight.insert(0, "0.7")
-        self.ch_weight.delete(0, tk.END)
-        self.ch_weight.insert(0, "0.3")
+        self.replace_entry(self.c_tol, 1.0)
+        self.replace_entry(self.h_tol, 0.2)
+        self.replace_entry(self.c_weight, 0.7)
+        self.replace_entry(self.ch_weight, 0.3)
 
     def get_c_data(self):
         if self.c_mode.get() == "typed":
@@ -593,26 +625,35 @@ class CombinedModeFrame(BaseModeFrame):
         scoring_config["carbon_score_mode"] = scoring_mode
 
         if scoring_mode == "global":
-            scoring_config["carbon_global_thresholds"] = (
-                float(self.green_thresh.get()),
-                float(self.yellow_thresh.get()),
-            )
+            green = float(self.green_thresh.get())
+            yellow = float(self.yellow_thresh.get())
+            if not 0 <= green < yellow:
+                raise ValueError("Carbon thresholds must satisfy 0 <= green < yellow")
+            scoring_config["carbon_global_thresholds"] = (green, yellow)
         elif scoring_mode == "fine":
+            if not self.range_rows:
+                raise ValueError("Fine scoring requires at least one range")
             fine_ranges = []
-            for row in self.range_rows:
+            for index, row in enumerate(self.range_rows, start=1):
                 try:
                     c_start = float(row["start"].get())
                     c_end = float(row["end"].get())
                     green_val = float(row["green"].get())
                     yellow_val = float(row["yellow"].get())
-                    fine_ranges.append(((c_start, c_end), green_val, yellow_val))
-                except ValueError:
-                    continue
-            scoring_config["fine_ranges"] = fine_ranges
+                except ValueError as exc:
+                    raise ValueError(f"Fine scoring row {index} contains a non-numeric value") from exc
+                if c_start >= c_end:
+                    raise ValueError(f"Fine scoring row {index} requires start < end")
+                if not 0 <= green_val < yellow_val:
+                    raise ValueError(
+                        f"Fine scoring row {index} requires 0 <= green < yellow"
+                    )
+                fine_ranges.append(((c_start, c_end), green_val, yellow_val))
+            scoring_config["carbon_fine_ranges"] = fine_ranges
 
         return scoring_config
 
-    def run_analysis(self):
+    def prepare_analysis(self):
         env_params = (
             int(self.env_level.get()),
             float(self.self_weight.get()),
@@ -636,13 +677,46 @@ class CombinedModeFrame(BaseModeFrame):
 
         scoring_config = self.process_carbon_scoring_config()
         config.update(scoring_config)
+        c_min, c_max = config["c_range"]
+        mw_min, mw_max = config["fw_range"]
+        if c_min < 0 or c_min > c_max:
+            raise ValueError("Carbon range must satisfy 0 <= minimum <= maximum")
+        if mw_min < 0 or mw_min > mw_max:
+            raise ValueError("Molecular-weight range must satisfy 0 <= minimum <= maximum")
+        if config["C_merge"] not in {"Y", "N"} or config["CH_merge"] not in {"Y", "N"}:
+            raise ValueError("Merge parameters must be Y or N")
+        if not config["c_data"] or (
+            isinstance(config["c_data"], dict) and not any(config["c_data"].values())
+        ):
+            raise ValueError("Carbon-shift data cannot be empty")
+        if env_params[0] not in {1, 2, 3}:
+            raise ValueError("Environment level must be 1, 2, or 3")
+        if any(weight < 0 or weight > 1 for weight in env_params[1:]) or abs(
+            sum(env_params[1:]) - 1.0
+        ) > 1e-6:
+            raise ValueError("Self and environment weights must be in [0, 1] and sum to 1")
+        if any(value <= 0 for value in config["ch_tolerances"]):
+            raise ValueError("C and H tolerances must be positive")
+        if any(weight < 0 or weight > 1 for weight in config["final_weights"]) or abs(
+            sum(config["final_weights"]) - 1.0
+        ) > 1e-6:
+            raise ValueError("C and CH weights must be in [0, 1] and sum to 1")
+        return config
 
+    def execute_analysis(self, config):
         pipeline = CombinedScorerGUI(**config)
         results = pipeline.execute()
-        pipeline._generate_plots(output_dir="combined_results")
+        if not results:
+            raise ValueError("No candidates satisfied the selected filters and input data")
+        return pipeline, results
 
+    def show_analysis_results(self, payload):
+        pipeline, results = payload
+        output_dir = self.create_run_output_dir("combined_results")
+        self.save_import_report(pipeline.import_report, output_dir)
+        pipeline._generate_plots(output_dir=output_dir)
         viewer = CombinedResultViewer(
-            db_path="chem_data.db", results=results, output_dir="combined_results"
+            db_path="chem_data.db", results=results, output_dir=output_dir
         )
         viewer.create_result_window(self.master)
 
@@ -658,6 +732,11 @@ class CombinedModeFrame(BaseModeFrame):
             text = self.point_groups[t].get("1.0", tk.END).strip()
 
             text = text.replace("（", "(").replace("）", ")").replace("，", ",")
+            pattern = r"^\(\s*(?:\d+\.?\d*|\.\d+)\s*,\s*(?:\d+\.?\d*|\.\d+)\s*\)(?:[,\s]*\(\s*(?:\d+\.?\d*|\.\d+)\s*,\s*(?:\d+\.?\d*|\.\d+)\s*\))*$"
+            if not re.fullmatch(pattern, text):
+                raise ValueError(
+                    f"{t} format error; expected a list such as (120.1, 7.2), (35.0, 2.1)"
+                )
 
             matches = re.findall(r"\(([\d.]+),\s*([\d.]+)\)", text)
             ch_data[t] = [[float(m[0]), float(m[1])] for m in matches]
@@ -900,22 +979,33 @@ class CarbonOnlyModeFrame(BaseModeFrame):
         try:
             if not self.file_selector.selected_files:
                 raise ValueError("Please select the SDF file first")
-
-            if self.c_mode.get() == "typed":
-                for label in ["   All_C    ", "+Dept_135", "-Dept_135", "  Dept_90 "]:
-                    text = self.typed_params[label].get("1.0", tk.END).strip()
-                    if not text:
-                        raise ValueError(f"{label.strip()} cannot be empty")
-            else:
-                text = self.global_entry.get("1.0", tk.END).strip().replace("，", ",")
-                if not text:
-                    raise ValueError("Global mode requires a list of displacements")
-            if not (self.c_min.get().isdigit() and self.c_max.get().isdigit()):
-                raise ValueError("The carbon number range must be an integer")
+            self.prepare_analysis()
             return True
         except Exception as e:
             messagebox.showerror("Input error", str(e))
             return False
+
+    def reset_parameters(self):
+        self.c_mode.set("typed")
+        self.c_merge.set("N")
+        self.toggle_c_params()
+        for entry in self.typed_params.values():
+            entry.delete("1.0", tk.END)
+        self.global_entry.delete("1.0", tk.END)
+        self.replace_entry(self.c_min, 5)
+        self.replace_entry(self.c_max, 30)
+        self.replace_entry(self.m_min, 100)
+        self.replace_entry(self.m_max, 500)
+        self.env_level.set(1)
+        self.replace_entry(self.self_weight, 0.7)
+        self.update_env_weight()
+        self.score_mode.set("global")
+        self.toggle_score_mode()
+        self.replace_entry(self.green_thresh, 0.5)
+        self.replace_entry(self.yellow_thresh, 2.0)
+        for row in self.range_rows.copy():
+            self.remove_range_row(row["frame"])
+        self.add_range_row((0, 220), 1, 3)
 
     def process_carbon_scoring_config(self):
         scoring_config = {}
@@ -924,27 +1014,35 @@ class CarbonOnlyModeFrame(BaseModeFrame):
         scoring_config["score_mode"] = scoring_mode
 
         if scoring_mode == "global":
-            scoring_config["global_thresholds"] = (
-                float(self.green_thresh.get()),
-                float(self.yellow_thresh.get()),
-            )
+            green = float(self.green_thresh.get())
+            yellow = float(self.yellow_thresh.get())
+            if not 0 <= green < yellow:
+                raise ValueError("Carbon thresholds must satisfy 0 <= green < yellow")
+            scoring_config["global_thresholds"] = (green, yellow)
         elif scoring_mode == "fine":
+            if not self.range_rows:
+                raise ValueError("Fine scoring requires at least one range")
             fine_ranges = []
-            for row in self.range_rows:
+            for index, row in enumerate(self.range_rows, start=1):
                 try:
                     c_start = float(row["start"].get())
                     c_end = float(row["end"].get())
                     green_val = float(row["green"].get())
                     yellow_val = float(row["yellow"].get())
-                    fine_ranges.append(((c_start, c_end), green_val, yellow_val))
-                except ValueError:
-                    continue
+                except ValueError as exc:
+                    raise ValueError(f"Fine scoring row {index} contains a non-numeric value") from exc
+                if c_start >= c_end:
+                    raise ValueError(f"Fine scoring row {index} requires start < end")
+                if not 0 <= green_val < yellow_val:
+                    raise ValueError(
+                        f"Fine scoring row {index} requires 0 <= green < yellow"
+                    )
+                fine_ranges.append(((c_start, c_end), green_val, yellow_val))
             scoring_config["fine_ranges"] = fine_ranges
 
         return scoring_config
 
-    def run_analysis(self):
-
+    def prepare_analysis(self):
         config = {
             "sdf_files": self.file_selector.selected_files,
             "c_mode": str(self.c_mode.get()),
@@ -959,18 +1057,43 @@ class CarbonOnlyModeFrame(BaseModeFrame):
 
         scoring_config = self.process_carbon_scoring_config()
         config.update(scoring_config)
+        if config["C_merge"] not in {"Y", "N"}:
+            raise ValueError("C_merge must be Y or N")
+        if not config["c_data"] or (
+            isinstance(config["c_data"], dict) and not any(config["c_data"].values())
+        ):
+            raise ValueError("Carbon-shift data cannot be empty")
+        c_min, c_max = config["c_range"]
+        mw_min, mw_max = config["fw_range"]
+        if c_min < 0 or c_min > c_max:
+            raise ValueError("Carbon range must satisfy 0 <= minimum <= maximum")
+        if mw_min < 0 or mw_min > mw_max:
+            raise ValueError("Molecular-weight range must satisfy 0 <= minimum <= maximum")
+        if config["env_level"] not in {1, 2, 3}:
+            raise ValueError("Environment level must be 1, 2, or 3")
+        if any(
+            weight < 0 or weight > 1
+            for weight in (config["self_weight"], config["env_weight"])
+        ) or abs(config["self_weight"] + config["env_weight"] - 1.0) > 1e-6:
+            raise ValueError("Self and environment weights must be in [0, 1] and sum to 1")
+        return config
 
-        try:
-            pipeline = CarbonOnlyScorerGUI(**config)
-            results = pipeline.execute()
-            visualizer = CarbonResultVisualizer(db_path="chem_data.db", top_results=results)
-            visualizer.generate_plots(output_dir="molecule_plots")
+    def execute_analysis(self, config):
+        pipeline = CarbonOnlyScorerGUI(**config)
+        results = pipeline.execute()
+        if not results:
+            raise ValueError("No candidates satisfied the selected filters and input data")
+        return pipeline, results
 
-            # 显示结果窗口
-            ResultViewer("chem_data.db", results).create_result_window(self.master)
-
-        except Exception as e:
-            messagebox.showerror("Analysis error", str(e))
+    def show_analysis_results(self, payload):
+        pipeline, results = payload
+        output_dir = self.create_run_output_dir("molecule_plots")
+        self.save_import_report(pipeline.import_report, output_dir)
+        visualizer = CarbonResultVisualizer(db_path="chem_data.db", top_results=results)
+        visualizer.generate_plots(output_dir=output_dir)
+        ResultViewer(
+            "chem_data.db", results, output_dir=output_dir
+        ).create_result_window(self.master)
 
     def get_c_data(self):
         if self.c_mode.get() == "typed":
@@ -1085,32 +1208,20 @@ class CHMatchModeFrame(BaseModeFrame):
         try:
             if not self.file_selector.selected_files:
                 raise ValueError("Please select the SDF file first")
-
-            current_mode = int(self.hmqc_mode.get())
-            required_fields = {
-                1: ["All_type"],
-                2: ["type13", "type2"],
-                3: ["type1", "type2", "type3"],
-            }[current_mode]
-
-            pattern = r"^\(\s*(?:\d+\.?\d*|\.\d+)\s*,\s*(?:\d+\.?\d*|\.\d+)\s*\)(?:[,\s]*\(\s*(?:\d+\.?\d*|\.\d+)\s*,\s*(?:\d+\.?\d*|\.\d+)\s*\))*$"
-
-            for field in required_fields:
-                text = self.point_groups[field].get("1.0", tk.END).strip()
-
-                text = text.replace("，", ",").replace("（", "(").replace("）", ")")
-                if not text:
-                    raise ValueError(f"{field} cannot be empty")
-                if not re.match(pattern, text):
-                    raise ValueError(
-                        f"{field} format error, should be (numbers, numbers) list, support decimals, do not support negative numbers"
-                    )
+            self.prepare_analysis()
             return True
         except Exception as e:
             messagebox.showerror("Input error", str(e))
             return False
 
-    def run_analysis(self):
+    def reset_parameters(self):
+        self.hmqc_mode.current(1)
+        self.ch_merge.set("N")
+        self.create_input_groups()
+        self.replace_entry(self.c_tol, 1.0)
+        self.replace_entry(self.h_tol, 0.2)
+
+    def prepare_analysis(self):
         config = {
             "sdf_files": self.file_selector.selected_files,
             "ch_mode": int(self.hmqc_mode.get()),
@@ -1118,19 +1229,31 @@ class CHMatchModeFrame(BaseModeFrame):
             "ch_data": self.get_ch_data(),
             "tolerances": tuple(map(float, (self.c_tol.get(), self.h_tol.get()))),
         }
+        if config["CH_merge"] not in {"Y", "N"}:
+            raise ValueError("CH_merge must be Y or N")
+        if any(value <= 0 for value in config["tolerances"]):
+            raise ValueError("C and H tolerances must be positive")
+        return config
 
-        try:
-            pipeline = CHOnlyScorerGUI(**config)
-            results = pipeline.execute()
-            visualizer = CHMatchVisualizer(
-                db_path="chem_data.db", top_results=results, mode=config["ch_mode"]
-            )
-            results = pipeline.execute()
-            viewer = CHResultViewer(db_path="chem_data.db", results=results)
-            viewer.create_result_window(self.master)
-            visualizer.generate_plots()
-        except Exception as e:
-            messagebox.showerror("Analysis error", str(e))
+    def execute_analysis(self, config):
+        pipeline = CHOnlyScorerGUI(**config)
+        results = pipeline.execute()
+        if not results:
+            raise ValueError("No candidates satisfied the selected filters and input data")
+        return config, pipeline, results
+
+    def show_analysis_results(self, payload):
+        config, pipeline, results = payload
+        output_dir = self.create_run_output_dir("ch_match_plots")
+        self.save_import_report(pipeline.import_report, output_dir)
+        visualizer = CHMatchVisualizer(
+            db_path="chem_data.db", top_results=results, mode=config["ch_mode"]
+        )
+        visualizer.generate_plots(output_dir=output_dir)
+        viewer = CHResultViewer(
+            db_path="chem_data.db", results=results, output_dir=output_dir
+        )
+        viewer.create_result_window(self.master)
 
     def get_ch_data(self):
         ch_data = {}
@@ -1142,6 +1265,11 @@ class CHMatchModeFrame(BaseModeFrame):
         for t in types_config:
             text = self.point_groups[t].get("1.0", tk.END).strip()
             text = text.replace("（", "(").replace("）", ")").replace("，", ",")
+            pattern = r"^\(\s*(?:\d+\.?\d*|\.\d+)\s*,\s*(?:\d+\.?\d*|\.\d+)\s*\)(?:[,\s]*\(\s*(?:\d+\.?\d*|\.\d+)\s*,\s*(?:\d+\.?\d*|\.\d+)\s*\))*$"
+            if not re.fullmatch(pattern, text):
+                raise ValueError(
+                    f"{t} format error; expected a list such as (120.1, 7.2), (35.0, 2.1)"
+                )
             matches = re.findall(r"\(([\d.]+),\s*([\d.]+)\)", text)
             ch_data[t] = [[float(m[0]), float(m[1])] for m in matches]
 
@@ -1151,6 +1279,7 @@ class CHMatchModeFrame(BaseModeFrame):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
+        self.analysis_owner = None
         self.title("ReCQC 2.0 - Natural product analysis based on C spectrum and HSQC")
         self.geometry("800x610")
         ChemTheme.configure_style()

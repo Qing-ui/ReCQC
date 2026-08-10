@@ -1,265 +1,286 @@
 import io
 import logging
+import tempfile
 import tkinter as tk
 import webbrowser
+from pathlib import Path
 from tkinter import messagebox, ttk
 
 from PIL import Image, ImageTk
+from ui_theme import COLORS, configure_theme
 
 LOGGER = logging.getLogger(__name__)
 
 
-class ViewPage(tk.Frame):
-    def __init__(self, root, callback, search_results):
-        super().__init__(root)
-        self.configure(bg="#2C3E50")
+class ViewPage(ttk.Frame):
+    def __init__(self, master, callback, search_results):
+        super().__init__(master)
         self.callback = callback
-        self.search_results = search_results[:6]  # 每次只显示前6个结果
-        self.creat_result_page()
+        self.search_results = search_results[:6]
+        self._images = []
+        self._build()
 
-    def creat_result_page(self):
-        for idx, item in enumerate(self.search_results):
-            item_frame = ttk.Frame(self)
-            item_frame.grid(row=idx // 3, column=idx % 3, padx=25, pady=15, sticky="nsew")
-            tk.Grid.rowconfigure(self, idx // 3, weight=1)
-            tk.Grid.columnconfigure(self, idx % 3, weight=1)
-            img_data = item[1][4]
-            img = Image.open(io.BytesIO(img_data))
-            img = img.resize((200, 200), Image.LANCZOS)
-            photo = ImageTk.PhotoImage(img)
+    def _build(self):
+        for column in range(3):
+            self.columnconfigure(column, weight=1, uniform="result")
+        for row in range(2):
+            self.rowconfigure(row, weight=1, uniform="result")
 
-            # 创建图片控件
-            # 创建图片控件并放入Frame中
-            img_label = tk.Label(item_frame, image=photo, compound="center")
-            img_label.image = photo  # 保持对图片的引用
-            img_label.pack(fill=tk.BOTH, expand=True)
+        for index, item in enumerate(self.search_results):
+            compound_id, data = item
+            card = ttk.Frame(self, style="Surface.TFrame", padding=12)
+            card.grid(
+                row=index // 3,
+                column=index % 3,
+                padx=8,
+                pady=8,
+                sticky="nsew",
+            )
+            card.columnconfigure(0, weight=1)
+            card.rowconfigure(0, weight=1)
 
-            btn = ttk.Button(item_frame, text="Detail", command=lambda idx=idx: self.callback(idx))
-            btn.pack(padx=5, pady=5, side=tk.RIGHT)
-            label = ttk.Label(item_frame, text="Score：" + str(item[1][0]), justify="left")
-            label.pack(padx=5, pady=5, side=tk.LEFT)
-
-        for r in range(len(self.search_results), 6):
-            for c in range(3):
-                tk.Grid.rowconfigure(self, r // 3, minsize=0)
-                tk.Grid.columnconfigure(self, c, minsize=0)
+            image = Image.open(io.BytesIO(data[4])).resize(
+                (220, 220), Image.Resampling.LANCZOS
+            )
+            photo = ImageTk.PhotoImage(image)
+            self._images.append(photo)
+            tk.Label(card, image=photo, background=COLORS["surface"]).grid(
+                row=0, column=0, sticky="nsew"
+            )
+            ttk.Label(
+                card,
+                text=f"Score  {data[0]}",
+                style="Score.TLabel",
+            ).grid(row=1, column=0, sticky="w", pady=(10, 2))
+            ttk.Label(
+                card,
+                text=f"ID  {compound_id}",
+                style="Muted.TLabel",
+            ).grid(row=2, column=0, sticky="w")
+            ttk.Button(
+                card,
+                text="View details",
+                command=lambda idx=index: self.callback(idx),
+            ).grid(row=3, column=0, sticky="e", pady=(8, 0))
 
 
 class ResultViewerApp(tk.Toplevel):
-    def __init__(self, root, search_results, callback):
+    def __init__(self, root, search_results, callback=None):
         super().__init__(root)
-        self.geometry("800x650")
-        self.configure(bg="#2C3E50")
-        self.title("Result Viewer")
+        self.title("ReCQC 1.0 - Candidate results")
+        self.geometry("1080x800")
+        self.minsize(920, 700)
+        configure_theme(self)
         self.callback = callback
         self.search_results = list(search_results.items())
+        self.pages = [
+            self.search_results[index : index + 6]
+            for index in range(0, len(self.search_results), 6)
+        ]
         self.current_index = 0
-        self.pages = [self.search_results[i : i + 6] for i in range(0, len(self.search_results), 6)]
-        self.create_widgets()
+        self._build()
 
-    def create_widgets(self):
-        self.frame = tk.Frame(self)
-        self.frame.pack(fill=tk.BOTH, expand=True)
+    def _build(self):
+        header = ttk.Frame(self, style="Header.TFrame", padding=(20, 12))
+        header.pack(fill="x")
+        ttk.Label(header, text="Candidate results", style="Header.TLabel").pack(side="left")
+        self.page_label = ttk.Label(
+            header,
+            text="",
+            style="Header.TLabel",
+            font=("Segoe UI", 10),
+        )
+        self.page_label.pack(side="right")
 
-        # 初始化第一页
-        self.show_page(0)
+        self.content = ttk.Frame(self, padding=(16, 10))
+        self.content.pack(fill="both", expand=True)
 
-        # 创建下一页和上一页的按钮
-        prev_btn = ttk.Button(self, text="Previous", command=self.prev_page)
-        prev_btn.pack(side=tk.LEFT, padx=10, pady=10)
+        footer = ttk.Frame(self, padding=(20, 8, 20, 16))
+        footer.pack(fill="x")
+        self.previous_button = ttk.Button(footer, text="Previous", command=self.prev_page)
+        self.previous_button.pack(side="left")
+        self.next_button = ttk.Button(footer, text="Next", command=self.next_page)
+        self.next_button.pack(side="right")
 
-        next_btn = ttk.Button(self, text="Next", command=self.next_page)
-        next_btn.pack(side=tk.RIGHT, padx=10, pady=10)
+        if self.pages:
+            self.show_page(0)
+        else:
+            ttk.Label(
+                self.content,
+                text="No candidates were returned.",
+                style="Subtitle.TLabel",
+            ).pack(expand=True)
+            self._update_navigation()
 
     def show_page(self, index):
-        try:
-            for widget in self.frame.winfo_children():
-                widget.destroy()  # 清除当前页面上的所有控件
-            page_results = self.pages[index]
-            search_page = ViewPage(self.frame, self.on_button_click, page_results)
-            search_page.pack(fill=tk.BOTH, expand=True)
-            self.current_index = index
-        except IndexError:
-            LOGGER.debug("Requested result page is outside the available range.")
+        if not 0 <= index < len(self.pages):
+            return
+        for widget in self.content.winfo_children():
+            widget.destroy()
+        page = ViewPage(self.content, self.on_button_click, self.pages[index])
+        page.pack(fill="both", expand=True)
+        self.current_index = index
+        self._update_navigation()
+
+    def _update_navigation(self):
+        page_count = len(self.pages)
+        self.page_label.configure(
+            text=f"Page {self.current_index + 1} of {page_count}" if page_count else "0 results"
+        )
+        self.previous_button.configure(
+            state="normal" if self.current_index > 0 else "disabled"
+        )
+        self.next_button.configure(
+            state="normal" if self.current_index < page_count - 1 else "disabled"
+        )
 
     def prev_page(self):
-        if self.current_index > 0:
-            self.show_page(self.current_index - 1)
+        self.show_page(self.current_index - 1)
 
     def next_page(self):
-        if self.current_index < len(self.pages) - 1:
-            self.show_page(self.current_index + 1)
+        self.show_page(self.current_index + 1)
 
-    def on_button_click(self, idx):
-        # 这里处理按钮点击事件，idx是当前点击的按钮对应的搜索结果索引（在当前页内的索引）
-        global_idx = self.current_index * 6 + idx
-        frame = tk.Frame(self, bg="#2C3E50")
-        frame.pack(fill=tk.BOTH, expand=True)
-        detial_page = DetailPage(frame, self.search_results[global_idx])
+    def on_button_click(self, index):
+        global_index = self.current_index * 6 + index
+        if not 0 <= global_index < len(self.search_results):
+            return
+        if self.callback is not None:
+            self.callback(global_index)
+        DetailPage(self, self.search_results[global_index])
 
 
 class DetailPage(tk.Toplevel):
     def __init__(self, root, item):
         super().__init__(root)
-        self.geometry("1900x1000")
-        self.configure(bg="#2C3E50")
-        self.title("Detail Page")
+        self.title("ReCQC 1.0 - Candidate detail")
+        self.geometry("1320x860")
+        self.minsize(1100, 760)
+        configure_theme(self)
         self.item = item
-        self.create_detail_page()
+        self.images = {}
+        self.ppm_images = {}
+        self._build()
 
-    def create_detail_page(self):
-        rank_label = tk.Label(
-            self, text="Rank: " + f"{self.item[1][1]}", justify="left", font=("Arial", 13)
+    def _build(self):
+        compound_id, data = self.item
+        header = ttk.Frame(self, style="Header.TFrame", padding=(22, 12))
+        header.pack(fill="x")
+        ttk.Label(header, text=f"Candidate {compound_id}", style="Header.TLabel").pack(
+            side="left"
         )
-        rank_label.place(relx=0.05, rely=0.05)
+        ttk.Label(
+            header,
+            text=f"Rank {data[1]}   •   Score {data[0]}",
+            style="Header.TLabel",
+            font=("Segoe UI", 10),
+        ).pack(side="right")
 
-        score_label = tk.Label(
-            self, text="Score: " + f"{self.item[1][0]}", justify="left", font=("Arial", 13)
+        metadata = ttk.Frame(self, style="Surface.TFrame", padding=(18, 12))
+        metadata.pack(fill="x", padx=18, pady=(18, 10))
+        metadata.columnconfigure(1, weight=1)
+        ttk.Label(metadata, text=f"Molecular weight: {data[2]}", style="Surface.TLabel").grid(
+            row=0, column=0, sticky="w", padx=(0, 24)
         )
-        score_label.place(relx=0.2, rely=0.05)
-
-        id_label = tk.Label(
-            self, text="ID: " + f"{self.item[0]}", justify="left", font=("Arial", 13)
+        ttk.Label(metadata, text=f"Formula: {data[7]}", style="Surface.TLabel").grid(
+            row=0, column=1, sticky="w"
         )
-        id_label.place(relx=0.4, rely=0.05)
-
-        mw_label = tk.Label(
-            self, text="MW: " + f"{self.item[1][2]}", justify="left", font=("Arial", 13)
+        ttk.Button(
+            metadata,
+            text="Open matched-atom table",
+            command=lambda: self.open_html_table(data[3]),
+        ).grid(row=0, column=2, sticky="e")
+        ttk.Label(metadata, text="SMILES", style="Muted.TLabel").grid(
+            row=1, column=0, sticky="nw", pady=(10, 0)
         )
-        mw_label.place(relx=0.6, rely=0.05)
+        smiles = ttk.Entry(metadata)
+        smiles.insert(0, data[8])
+        smiles.configure(state="readonly")
+        smiles.grid(row=1, column=1, columnspan=2, sticky="ew", pady=(10, 0))
 
-        fomular_label = tk.Label(
-            self, text="fomular：" + f"{self.item[1][7]}", justify="left", font=("Arial", 13)
+        visual_body = ttk.Frame(self, padding=(18, 8, 18, 18))
+        visual_body.pack(fill="both", expand=True)
+        visual_body.columnconfigure(0, weight=1)
+        visual_body.columnconfigure(1, weight=1)
+        visual_body.rowconfigure(0, weight=1)
+
+        molecule_panel = ttk.LabelFrame(visual_body, text="Molecular annotation")
+        molecule_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        molecule_panel.columnconfigure(0, weight=1)
+        molecule_panel.rowconfigure(1, weight=1)
+
+        molecule_options = ttk.Frame(molecule_panel, style="Surface.TFrame")
+        molecule_options.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        molecule_sources = {
+            "Atom indices": data[4],
+            "Database shifts": data[5],
+            "User shifts": data[6],
+        }
+        self.molecule_var = tk.StringVar(value="Atom indices")
+        for column, (label, image_bytes) in enumerate(molecule_sources.items()):
+            image = Image.open(io.BytesIO(image_bytes)).resize(
+                (500, 500), Image.Resampling.LANCZOS
+            )
+            self.images[label] = ImageTk.PhotoImage(image)
+            ttk.Radiobutton(
+                molecule_options,
+                text=label,
+                variable=self.molecule_var,
+                value=label,
+                command=self.update_molecule_image,
+            ).grid(row=0, column=column, padx=(0, 8))
+        self.molecule_image = tk.Label(
+            molecule_panel,
+            image=self.images[self.molecule_var.get()],
+            background=COLORS["surface"],
         )
-        fomular_label.place(relx=0.8, rely=0.05)
+        self.molecule_image.grid(row=1, column=0, sticky="nsew")
 
-        smiles_label = tk.Label(self, text="smiles: ", justify="left", font=("Arial", 13))
-        smiles_label.place(relx=0.05, rely=0.15)
+        spectrum_panel = ttk.LabelFrame(visual_body, text="Chemical-shift comparison")
+        spectrum_panel.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        spectrum_panel.columnconfigure(0, weight=1)
+        spectrum_panel.rowconfigure(1, weight=1)
 
-        smiles_entry = tk.Text(
-            self, width=100, font=("Arial", 13), fg="white", bg="#2C3E50", height="1"
+        spectrum_options = ttk.Frame(spectrum_panel, style="Surface.TFrame")
+        spectrum_options.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        spectrum_sources = {"Database": data[9], "User": data[10]}
+        self.spectrum_var = tk.StringVar(value="Database")
+        for column, (label, image_bytes) in enumerate(spectrum_sources.items()):
+            image = Image.open(io.BytesIO(image_bytes)).resize(
+                (600, 380), Image.Resampling.LANCZOS
+            )
+            self.ppm_images[label] = ImageTk.PhotoImage(image)
+            ttk.Radiobutton(
+                spectrum_options,
+                text=label,
+                variable=self.spectrum_var,
+                value=label,
+                command=self.update_spectrum_image,
+            ).grid(row=0, column=column, padx=(0, 8))
+        self.spectrum_image = tk.Label(
+            spectrum_panel,
+            image=self.ppm_images[self.spectrum_var.get()],
+            background=COLORS["surface"],
         )
-        smiles_entry.insert(tk.END, self.item[1][8])  # 使用tk.END作为插入点
-        smiles_entry.place(relx=0.2, rely=0.15)
+        self.spectrum_image.grid(row=1, column=0, sticky="nsew")
 
-        img_data1 = self.item[1][4]
-        img_data2 = self.item[1][5]
-        img_data3 = self.item[1][6]
+    def update_molecule_image(self):
+        image = self.images[self.molecule_var.get()]
+        self.molecule_image.configure(image=image)
+        self.molecule_image.image = image
 
-        # 加载和缩放图像
-        img1 = Image.open(io.BytesIO(img_data1)).resize((500, 500), Image.LANCZOS)
-        img2 = Image.open(io.BytesIO(img_data2)).resize((500, 500), Image.LANCZOS)
-        img3 = Image.open(io.BytesIO(img_data3)).resize((500, 500), Image.LANCZOS)
+    def update_spectrum_image(self):
+        image = self.ppm_images[self.spectrum_var.get()]
+        self.spectrum_image.configure(image=image)
+        self.spectrum_image.image = image
 
-        # 转换为 PhotoImage 对象
-        photo1 = ImageTk.PhotoImage(img1)
-        photo2 = ImageTk.PhotoImage(img2)
-        photo3 = ImageTk.PhotoImage(img3)
-
-        # 存储图像和对应的 PhotoImage 对象
-        self.images = {"IndexImage": photo1, "DataBaseImage": photo2, "UserImage": photo3}
-
-        # 默认显示第一张图片
-        self.current_image_key = "IndexImage"
-        self.image_label = tk.Label(self)
-        self.image_label.config(image=self.images[self.current_image_key])
-        self.image_label.image = self.images[self.current_image_key]
-        self.image_label.place(
-            relx=0.05,
-            rely=0.3,
-        )
-
-        # 创建单选框
-        self.radio_var = tk.StringVar(value=self.current_image_key)
-        radio_frame = tk.Frame(self)
-        radio_frame.place(relx=0.05, rely=0.25)  # 使用 pack 布局管理器，并添加一些内边距
-
-        radio_cols = 0
-        for key, _ in self.images.items():
-            tk.Radiobutton(
-                radio_frame,
-                text=f"Show {key}",
-                variable=self.radio_var,
-                value=key,
-                font=("Arial", 12),
-                command=lambda key=key: self.update_image(key),
-            ).grid(row=0, column=radio_cols)
-            radio_cols += 1
-        html = self.item[1][3]
-        open_button = tk.Button(
-            self, text="Open Df_html Table", command=lambda: self.open_html_table(html)
-        )
-        open_button.place(relx=0.5, rely=0.25)
-        html_label = tk.Label(
-            self,
-            text="(Here's a representation of a web table with labeled results)",
-            justify="left",
-            font=("Arial", 13),
-            bg="#2C3E50",
-            fg="white",
-        )
-        html_label.place(relx=0.6, rely=0.25)
-
-        ppm_data1 = self.item[1][9]
-        ppm_data2 = self.item[1][10]
-
-        # 加载和缩放图像
-        ppm1 = Image.open(io.BytesIO(ppm_data1)).resize((650, 400), Image.LANCZOS)
-        ppm2 = Image.open(io.BytesIO(ppm_data2)).resize((650, 400), Image.LANCZOS)
-
-        photo4 = ImageTk.PhotoImage(ppm1)
-        photo5 = ImageTk.PhotoImage(ppm2)
-
-        # 存储图像和对应的 PhotoImage 对象
-        self.ppm_images = {"db_ppm": photo4, "user_ppm": photo5}
-
-        # 默认显示第一张图片
-        self.current_ppm_key = "db_ppm"
-        self.ppm_label = tk.Label(self)
-        self.ppm_label.config(image=self.ppm_images[self.current_ppm_key])
-        self.ppm_label.image = self.ppm_images[self.current_ppm_key]  # 保持对图片的引用
-        self.ppm_label.place(
-            relx=0.5,
-            rely=0.4,
-        )  # 或者使用其他布局管理器
-
-        # 创建单选框
-        self.ppm_radio_var = tk.StringVar(value=self.current_ppm_key)
-        radio_ppm_frame = tk.Frame(self)
-        radio_ppm_frame.place(relx=0.6, rely=0.35)  # 使用 pack 布局管理器，并添加一些内边距
-
-        radio_ppm_cols = 0
-        for key, _ in self.ppm_images.items():
-            tk.Radiobutton(
-                radio_ppm_frame,
-                text=f"Show {key}",
-                variable=self.ppm_radio_var,
-                value=key,
-                font=("Arial", 12),
-                command=lambda key=key: self.update_image2(key),
-            ).grid(row=0, column=radio_ppm_cols)
-            radio_ppm_cols += 1
-
-    def update_image(self, key):
-        self.image_label.config(image=self.images[key])
-        self.image_label.image = self.images[key]
-        self.current_image_key = key
-
-    def update_image2(self, key):
-        self.ppm_label.config(image=self.ppm_images[key])
-        self.ppm_label.image = self.ppm_images[key]
-        self.current_ppm_key = key
-
-    def open_html_table(self, df_html):
-        html_content = df_html
-        with io.BytesIO() as buffer:
-            buffer.write(html_content.encode("utf-8"))
-            buffer.seek(0)
-            html_file_path = "temp_table.html"
-            with open(html_file_path, "wb") as html_file:
-                html_file.write(buffer.read())
-        # 使用 webbrowser 打开 HTML 文件
+    def open_html_table(self, html_content):
         try:
-            webbrowser.open(html_file_path)
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to open HTML file: {e}")
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".html", prefix="recqc_match_", encoding="utf-8", delete=False
+            ) as html_file:
+                html_file.write(html_content)
+                path = Path(html_file.name)
+            webbrowser.open(path.as_uri())
+        except Exception as exc:
+            LOGGER.exception("Failed to open the matched-atom table")
+            messagebox.showerror("Result table", str(exc), parent=self)

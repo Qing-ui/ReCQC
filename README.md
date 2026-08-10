@@ -13,6 +13,7 @@ ReCQC 是一款基于 13C NMR 与 HSQC 数据进行天然产物混合物去重�
 | --- | --- | --- | --- |
 | ReCQC 1.0 | Released / 正式版 | [`apps/recqc-1.0`](apps/recqc-1.0) | Original 13C NMR dereplication workflow |
 | ReCQC 2.0 | Released / 正式版 | [`apps/recqc-2.0`](apps/recqc-2.0) | 13C NMR and HSQC database strategies |
+| ReCQC 2.0 Speed | Released / 正式版 | [`ReCQC2.0-speed`](ReCQC2.0-speed) | Optimized 2.0 workflow with CORD-NMR full-score carbon assignment |
 | ReCQC (Hungarian) | Released / 正式版 | [`apps/recqc-hungarian`](apps/recqc-hungarian) | New matching algorithm using Hungarian assignment |
 
 All three implementations are maintained as formal ReCQC projects. ReCQC 1.0
@@ -75,6 +76,26 @@ ReCQC Hungarian：
 ```powershell
 python apps/recqc-hungarian/gui.py
 ```
+
+ReCQC 2.0 Speed：
+
+```powershell
+python ReCQC2.0-speed/gui.py
+```
+
+## Matching methods / 匹配方法
+
+- ReCQC 1.0 and the original ReCQC 2.0 use the same two-stage carbon matching
+  principle: type-compatible nearest matching followed by global fallback.
+- ReCQC2.0-speed follows the CORD-NMR full-score assignment and globally
+  maximizes the total green-plus-yellow carbon score under the selected
+  thresholds.
+- The Hungarian release remains a separately identified algorithmic variant.
+
+- ReCQC 1.0 与原 ReCQC 2.0 采用一致的两阶段碳谱匹配原则：先按类型兼容做最近匹配，
+  再对剩余原子进行全局补配。
+- ReCQC2.0-speed 与 CORD-NMR 一致，在所选阈值下全局最大化绿色与黄色原子总分。
+- Hungarian 发布版继续作为独立标识的算法变体。
 
 See [`docs/User Guide.pdf`](docs/User%20Guide.pdf) for the graphical workflow.
 Example input files are available in [`examples/data`](examples/data).

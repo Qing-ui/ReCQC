@@ -1,8 +1,10 @@
-# ReCQC 2.0 — stable release
+# ReCQC 2.0 Speed
 
-This directory contains the released and recommended ReCQC 2.0 implementation.
-Its scoring behavior should remain stable unless a change is accompanied by a
-documented regression dataset and an explicit version update.
+This directory contains the optimized ReCQC 2.0 Speed implementation. Carbon
+assignment follows the CORD-NMR full-score method: under the selected global or
+range-specific thresholds, the one-to-one assignment maximizes the total green
+plus yellow atom score. Duplicate experimental shifts remain distinct peak
+instances, and symmetry mode groups equal database shifts.
 
 ## Run
 
@@ -10,7 +12,7 @@ From the repository root:
 
 ```powershell
 python -m pip install -r requirements.txt
-python apps/recqc-2.0/gui.py
+python ReCQC2.0-speed/gui.py
 ```
 
 ## Main modules
@@ -25,5 +27,6 @@ python apps/recqc-2.0/gui.py
 Generated databases, plots, and result directories are runtime artifacts and
 must not be committed.
 
-When publishing results, cite the ReCQC article listed in the repository README
-and report the exact release tag or Git commit used.
+When publishing results, cite the ReCQC article listed in the repository README,
+identify the Speed/CORD-NMR full-score matching method, and report the exact
+release tag or Git commit used.

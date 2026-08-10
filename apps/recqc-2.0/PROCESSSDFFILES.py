@@ -1,6 +1,7 @@
 import os
 import re
 import tkinter as tk
+import uuid
 from pathlib import Path
 from tkinter import filedialog
 from typing import List, Union
@@ -21,9 +22,13 @@ class SDFFileSelector:
         """通过GUI选择多个文件"""
         root = tk.Tk()
         root.withdraw()
-        files = filedialog.askopenfilenames(
-            title="Select the SDF file", filetypes=[("SDF file", "*.sdf"), ("All files", "*.*")]
-        )
+        try:
+            files = filedialog.askopenfilenames(
+                title="Select the SDF file",
+                filetypes=[("SDF file", "*.sdf"), ("All files", "*.*")],
+            )
+        finally:
+            root.destroy()
         self.selected_files = list(files)
         return self._validate_files()
 
@@ -31,7 +36,12 @@ class SDFFileSelector:
         """通过GUI选择目录并扫描SDF文件"""
         root = tk.Tk()
         root.withdraw()
-        folder = filedialog.askdirectory(title="Select the directory that contains the SDF file")
+        try:
+            folder = filedialog.askdirectory(
+                title="Select the directory that contains the SDF file"
+            )
+        finally:
+            root.destroy()
         self.selected_files = self._find_sdf_in_dir(folder) if folder else []
         return self._validate_files()
 
@@ -61,11 +71,13 @@ class SDFFileSelector:
                 print(f"Ignore non-SDF files: {f}")
                 continue
             valid_files.append(f)
+        self.selected_files = valid_files
         return valid_files
 
 
 import json
 import sqlite3
+from contextlib import closing
 from typing import List
 
 from rdkit import Chem, Geometry
@@ -84,9 +96,29 @@ class SDFBatchProcessor:
         self.output_db = output_db
         self._init_database()
 
+    @classmethod
+    def process_files_atomically(cls, file_paths: List[str], output_db: str):
+        """Import into a staging database and replace the live DB only on success."""
+        destination = Path(output_db).resolve()
+        staging = destination.with_name(
+            f".{destination.name}.{uuid.uuid4().hex}.importing"
+        )
+        try:
+            processor = cls(str(staging))
+            report = processor.process_files(file_paths)
+            if report["accepted"] == 0:
+                raise ValueError(
+                    "No valid molecules were imported from the selected SDF files"
+                )
+            os.replace(staging, destination)
+            return report
+        finally:
+            if staging.exists():
+                staging.unlink()
+
     def _init_database(self):
         """初始化数据库结构"""
-        with sqlite3.connect(self.output_db) as conn:
+        with closing(sqlite3.connect(self.output_db)) as conn:
             conn.execute("DROP TABLE IF EXISTS molecules")
             conn.execute("DROP TABLE IF EXISTS carbons")
             conn.execute("""
@@ -118,25 +150,62 @@ class SDFBatchProcessor:
 
     def process_files(self, file_paths: List[str]):
         """处理文件列表"""
-        with sqlite3.connect(self.output_db) as conn:
+        with closing(sqlite3.connect(self.output_db)) as conn:
             conn.execute("PRAGMA synchronous = NORMAL")
-            total_mols = 0
+            report = {"total": 0, "accepted": 0, "rejected": 0, "errors": []}
 
             with tqdm(total=len(file_paths), desc="Processing progress") as pbar:
                 for sdf_path in file_paths:
                     try:
                         suppl = Chem.SDMolSupplier(sdf_path)
-                        for mol in suppl:
+                        for record_number, mol in enumerate(suppl, start=1):
+                            report["total"] += 1
                             if not mol:
+                                self._record_rejection(
+                                    report, sdf_path, record_number, "RDKit parsing failed"
+                                )
                                 continue
-                            total_mols += 1
-                            self._process_molecule(mol, conn, sdf_path)
-                            pbar.update(1)
-                            pbar.set_postfix_str(os.path.basename(sdf_path))
+                            conn.execute("SAVEPOINT one_molecule")
+                            try:
+                                self._process_molecule(mol, conn, sdf_path)
+                            except Exception as exc:
+                                conn.execute("ROLLBACK TO one_molecule")
+                                conn.execute("RELEASE one_molecule")
+                                self._record_rejection(
+                                    report, sdf_path, record_number, str(exc)
+                                )
+                                continue
+                            conn.execute("RELEASE one_molecule")
+                            report["accepted"] += 1
                     except Exception as e:
+                        report["errors"].append(
+                            {"source_file": sdf_path, "record": None, "reason": str(e)}
+                        )
                         print(f"File {sdf_path} processing failed: {str(e)}")
+                    finally:
+                        pbar.update(1)
+                        pbar.set_postfix_str(os.path.basename(sdf_path))
 
-            print(f"Processing is complete! Processed {total_mols} molecules")
+            # Store the complete import in one transaction. Committing each
+            # molecule separately changes no value but forces a disk sync for
+            # every molecule.
+            conn.commit()
+
+            self.last_report = report
+            print(
+                "Processing is complete! "
+                f"Total: {report['total']}, accepted: {report['accepted']}, "
+                f"rejected: {report['rejected']}"
+            )
+            return report
+
+    @staticmethod
+    def _record_rejection(report, source_file, record_number, reason):
+        report["rejected"] += 1
+        report["errors"].append(
+            {"source_file": source_file, "record": record_number, "reason": reason}
+        )
+        print(f"Skip {source_file} record {record_number}: {reason}")
 
     def _process_molecule(self, mol, conn, source_file):
         """处理单个分子"""
@@ -153,12 +222,20 @@ class SDFBatchProcessor:
         # 获取分子量
         try:
             fw = float(mol.GetProp("FW"))
-        except KeyError:
-            print(f"Molecule lacks FW property: {mol.GetProp('_Name')}")
-            return
-            # 解析位移数据
+        except (KeyError, ValueError) as exc:
+            name = mol.GetProp("_Name") if mol.HasProp("_Name") else ""
+            raise ValueError(f"Molecule {name!r} has no valid FW property") from exc
+
+        # 解析位移数据
         h_shifts = self._parse_shift_data(mol, "HydrogenShifts")
         c_shifts = self._parse_shift_data(mol, "Predicted 13C shifts")
+        carbon_indices = [atom.GetIdx() for atom in mol.GetAtoms() if atom.GetAtomicNum() == 6]
+        missing_c_shifts = [idx for idx in carbon_indices if idx not in c_shifts]
+        if missing_c_shifts:
+            raise ValueError(
+                "Incomplete Predicted 13C shifts for atom indices: "
+                + ", ".join(map(str, missing_c_shifts))
+            )
         mol_block = Chem.MolToMolBlock(mol)
         # 插入分子记录
         cursor = conn.cursor()
@@ -206,7 +283,6 @@ class SDFBatchProcessor:
         """,
             carbons,
         )
-        conn.commit()
 
     def _parse_shift_data(self, mol, tag: str) -> dict:
         """统一解析含中括号的位移数据"""

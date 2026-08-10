@@ -46,12 +46,8 @@ class CarbonOnlyScorerGUI:
         :param self_weight: 自身评分权重
         :param env_weight: 环境评分权重
         """
-        # 初始化数据库
         self.db_path = db_path
-        processor = SDFBatchProcessor(db_path)
-        processor.process_files(sdf_files)
-
-        # 参数存储
+        self.sdf_files = sdf_files
         self.c_mode = c_mode
         self.C_merge = C_merge
         self.c_data = c_data or self._default_c_data()
@@ -59,16 +55,23 @@ class CarbonOnlyScorerGUI:
         self.fw_range = fw_range
         self.score_mode = score_mode
         self.global_thresholds = global_thresholds
-        self.fine_ranges = fine_ranges or [
-            ((0, 50), 1.0, 2.0),
-            ((50, 150), 2.0, 3.0),
-            ((150, 300), 3.0, 4.0),
-        ]
+        self.fine_ranges = (
+            fine_ranges
+            if fine_ranges is not None
+            else [
+                ((0, 50), 1.0, 2.0),
+                ((50, 150), 2.0, 3.0),
+                ((150, 300), 3.0, 4.0),
+            ]
+        )
         self.env_level = env_level
         self.self_weight = self_weight
         self.env_weight = env_weight
 
         self._validate_parameters()
+        self.import_report = SDFBatchProcessor.process_files_atomically(
+            sdf_files, db_path
+        )
 
     def _default_c_data(self):
         """生成默认C数据结构"""
@@ -81,18 +84,26 @@ class CarbonOnlyScorerGUI:
             raise ValueError("The carbon number range is invalid")
         if self.fw_range[0] > self.fw_range[1]:
             raise ValueError("The molecular weight range is invalid")
+        if self.C_merge not in {"Y", "N"}:
+            raise ValueError("C_merge must be Y or N")
 
         # 评分模式校验
         if self.score_mode not in ("global", "fine"):
             raise ValueError("The scoring mode must be global/fine")
         if self.score_mode == "global" and len(self.global_thresholds) != 2:
             raise ValueError("The global mode requires two thresholds")
+        if self.score_mode == "global" and not (
+            0 <= self.global_thresholds[0] < self.global_thresholds[1]
+        ):
+            raise ValueError("Global thresholds must satisfy 0 <= green < yellow")
         if self.score_mode == "fine" and not self.fine_ranges:
             raise ValueError("Granular mode requires a list of ranges")
 
         # 环境参数
         if self.env_level not in {1, 2, 3}:
             raise ValueError("The environment level must be 1-3")
+        if not (0 <= self.self_weight <= 1 and 0 <= self.env_weight <= 1):
+            raise ValueError("Environmental weights must be between 0 and 1")
         if abs(self.self_weight + self.env_weight - 1.0) > 1e-6:
             raise ValueError("The sum of environmental weights must be 1")
 
@@ -221,7 +232,7 @@ class CarbonResultVisualizer:
     def _plot_structure(
         self, mol: Chem.Mol, carbons: List[Dict], mol_id: int, name: str, output_dir: str
     ):
-
+        file_stem = f"mol_{mol_id}"
         highlight_atoms = [c["index"] for c in carbons]
         highlight_colors = [self._color_to_rgb(c["color"]) for c in carbons]
 
@@ -231,7 +242,7 @@ class CarbonResultVisualizer:
             highlight_atoms=highlight_atoms,
             highlight_colors=highlight_colors,
             labels={c["index"]: str(c["index"]) for c in carbons},
-            filename=f"{output_dir}/{name}_indices.png",
+            filename=os.path.join(output_dir, f"{file_stem}_indices.png"),
         )
 
         # 2. 数据库位移图
@@ -240,7 +251,7 @@ class CarbonResultVisualizer:
             highlight_atoms=highlight_atoms,
             highlight_colors=highlight_colors,
             labels={c["index"]: f"{c['db_shift']:.1f}" for c in carbons},
-            filename=f"{output_dir}/{name}_db_shifts.png",
+            filename=os.path.join(output_dir, f"{file_stem}_db_shifts.png"),
         )
 
         # 3. 用户位移图
@@ -249,7 +260,7 @@ class CarbonResultVisualizer:
             highlight_atoms=highlight_atoms,
             highlight_colors=highlight_colors,
             labels={c["index"]: f"{c['user_shift']:.1f}" for c in carbons},
-            filename=f"{output_dir}/{name}_user_shifts.png",
+            filename=os.path.join(output_dir, f"{file_stem}_user_shifts.png"),
         )
 
     def _draw_labeled_molecule(
@@ -320,11 +331,18 @@ class CarbonResultVisualizer:
         plt.title(f"{name}\nShift-Intensity Comparison")
         plt.gca().invert_xaxis()
         plt.grid(True)
-        plt.savefig(f"{output_dir}/{name}_shift_intensity.png")
+        plt.savefig(os.path.join(output_dir, f"mol_{mol_id}_shift_intensity.png"))
         plt.close()
 
     def _color_to_rgb(self, color_str: str) -> tuple:
         """将HEX颜色转换为归一化RGB元组"""
+        named_colors = {
+            "green": (0.2, 0.8, 0.2),
+            "yellow": (1.0, 0.85, 0.2),
+            "red": (0.9, 0.2, 0.2),
+        }
+        if color_str in named_colors:
+            return named_colors[color_str]
         if color_str.startswith("#"):
             return (
                 int(color_str[1:3], 16) / 255.0,
@@ -414,7 +432,7 @@ class ResultViewer:
         item_frame = ttk.Frame(self.grid_frame, relief="groove", borderwidth=1)
 
         # 图片展示（200x200）
-        img_path = f"molecule_plots/{name}_indices.png"
+        img_path = os.path.join(self.output_dir, f"mol_{mol_id}_indices.png")
         if os.path.exists(img_path):
             img = Image.open(img_path).resize((200, 200), Image.LANCZOS)
             photo = ImageTk.PhotoImage(img)
@@ -558,6 +576,7 @@ class ResultViewer:
 
     def load_molecule_data(self, mol_id):
         """加载分子数据"""
+        self.current_mol_id = mol_id
         with sqlite3.connect(self.db_path) as conn:
             # 获取分子名称
             self.current_mol_name = conn.execute(
@@ -568,7 +587,9 @@ class ResultViewer:
             self.update_struct_img()
 
             # 加载位移对比图
-            shift_path = f"molecule_plots/{self.current_mol_name}_shift_intensity.png"
+            shift_path = os.path.join(
+                self.output_dir, f"mol_{self.current_mol_id}_shift_intensity.png"
+            )
             if os.path.exists(shift_path):
                 img = Image.open(shift_path).resize((450, 350), Image.LANCZOS)
                 self.shift_photo = ImageTk.PhotoImage(img)
@@ -602,11 +623,13 @@ class ResultViewer:
 
     def update_struct_img(self):
         """更新结构图显示"""
-        if not hasattr(self, "current_mol_name"):
+        if not hasattr(self, "current_mol_id"):
             return
 
         img_type = self.struct_img_type.get()
-        img_path = f"molecule_plots/{self.current_mol_name}_{img_type}.png"
+        img_path = os.path.join(
+            self.output_dir, f"mol_{self.current_mol_id}_{img_type}.png"
+        )
 
         if os.path.exists(img_path):
             try:

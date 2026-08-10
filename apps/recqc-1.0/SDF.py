@@ -12,7 +12,14 @@ LOGGER = logging.getLogger(__name__)
 
 class File_path:
     def __init__(self, system_path=None, user_path=None):
-        base_dir = os.path.dirname(os.path.abspath(__file__))
+        # Release databases are deliberately external files beside the EXE so
+        # they remain inspectable and replaceable.  Source runs keep using the
+        # application directory.
+        base_dir = (
+            os.path.dirname(os.path.abspath(sys.executable))
+            if getattr(sys, "frozen", False)
+            else os.path.dirname(os.path.abspath(__file__))
+        )
         self.system_path_base = {
             "experiment_data": os.path.join(base_dir, "DB", "experiment.sdf"),
             "model_data": os.path.join(base_dir, "DB", "model.sdf"),
@@ -162,7 +169,7 @@ class Process_sdf_files:
             "c1ccoc1",  # furan
             "c1ccsc1",  # thiophene
             "c1cc[nH]c1",  # pyrrole
-            "c1noccc1",  # oxazole/isoxazole-like
+            "c1nocc1",  # oxazole/isoxazole-like
             "c1nccs1",  # thiazole-like
             # 常见稠合环
             "c1ccc2ccccc2c1",  # naphthalene
@@ -179,9 +186,19 @@ class Process_sdf_files:
 
     def process_file(self, path):
         supplier = Chem.SDMolSupplier(path)
-        for mol in supplier:
-            if mol is not None:
+        for record_number, mol in enumerate(supplier, start=1):
+            if mol is None:
+                LOGGER.warning("Skipping unreadable molecule %s in %s", record_number, path)
+                continue
+            try:
                 self.process_molecule(mol)
+            except (KeyError, TypeError, ValueError) as exc:
+                LOGGER.warning(
+                    "Skipping invalid molecule %s in %s: %s",
+                    record_number,
+                    path,
+                    exc,
+                )
 
     def process_molecule(self, mol):
         compound_id = self.get_compound_id(mol)
@@ -227,6 +244,9 @@ class Process_sdf_files:
         index_all_matches = []
         for substructure_str in self.substructure_list:
             substructure = Chem.MolFromSmiles(substructure_str)
+            if substructure is None:
+                LOGGER.warning("Skipping invalid substructure pattern: %s", substructure_str)
+                continue
             matches = mol.GetSubstructMatches(substructure)
 
             for match in matches:
@@ -289,7 +309,7 @@ class Process_sdf_files:
                         f"Error data row: {line}, which should contain two tab-separated fields"
                     )
         if error_list:
-            return error_list, exit(1)
+            raise ValueError("; ".join(error_list))
 
     def add_shift_data(
         self,
@@ -314,11 +334,15 @@ class Add_user_path:
     def __init__(self):
         self.user_path = []
 
-    def select_user_path(self):
-        root = tk.Tk()
-        root.withdraw()  # 隐藏根窗口
-        # 弹出文件选择对话框
-        file_path = filedialog.askopenfilename()
+    def select_user_path(self, parent=None):
+        temporary_root = None
+        if parent is None:
+            temporary_root = tk.Tk()
+            temporary_root.withdraw()
+            parent = temporary_root
+        file_path = filedialog.askopenfilename(
+            parent=parent, filetypes=[("SDF files", "*.sdf")]
+        )
 
         # 检查用户是否选择了一个文件
         if file_path:
@@ -330,6 +354,6 @@ class Add_user_path:
             else:
                 print(f"The suffix of file {file_path} is not sdf and has been ignored.")
 
-        # 销毁临时创建的Tkinter根窗口
-        root.destroy()
+        if temporary_root is not None:
+            temporary_root.destroy()
         return self.user_path

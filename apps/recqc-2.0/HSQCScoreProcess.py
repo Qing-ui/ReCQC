@@ -21,6 +21,10 @@ class CarbonCoordinateExtractor:
                     FOREIGN KEY(mol_id) REFERENCES molecules(mol_id)
                 )
             """)
+            conn.execute(
+                "CREATE INDEX idx_coordinates_mol_type "
+                "ON carbon_h_coordinates(mol_id, h_count)"
+            )
             conn.commit()
 
     def _process_carbon(self, c_data: dict) -> Union[None, dict]:
@@ -149,6 +153,7 @@ class CarbonCoordinateExtractor:
 import json
 import sqlite3
 
+import numpy as np
 from tqdm import tqdm
 
 
@@ -157,13 +162,15 @@ class UserPointMatcher:
         self.db_path = db_path
         self.user_points = user_points
         self.mode = mode
+        self.CH_merge = CH_merge
         self._validate_input()
         self._create_result_table()
-        self.CH_merge = CH_merge
 
     def _validate_input(self):
+        if self.CH_merge not in {"Y", "N"}:
+            raise ValueError("CH_merge must be Y or N")
         if self.mode == 1:
-            if not ("All_type" in self.user_points and "All_type" in self.user_points):
+            if "All_type" not in self.user_points:
                 raise ValueError("Mode 1 requires All_type key")
         elif self.mode == 2:
             if not ("type13" in self.user_points and "type2" in self.user_points):
@@ -189,17 +196,27 @@ class UserPointMatcher:
                     FOREIGN KEY(mol_id) REFERENCES molecules(mol_id))
             """)
             conn.execute("CREATE INDEX idx_match_h ON user_matches(h_type)")
+            conn.execute("CREATE INDEX idx_match_mol ON user_matches(mol_id)")
             conn.commit()
 
     def _calculate_distances(self, db_points, user_points):
-        distances = []
-        for i, (db_c, db_h) in enumerate(db_points):
-            for j, (user_c, user_h) in enumerate(user_points):
-                delta_h = (db_h - user_h) * 10
-                delta_c = db_c - user_c
-                dist = (delta_c**2 + delta_h**2) ** 0.5
-                distances.append((i, j, round(dist, 2)))
-        return sorted(distances, key=lambda x: x[2])
+        if not db_points or not user_points:
+            return []
+
+        db = np.asarray(db_points, dtype=float)
+        user = np.asarray(user_points, dtype=float)
+        delta_c = db[:, 0, np.newaxis] - user[np.newaxis, :, 0]
+        delta_h = (db[:, 1, np.newaxis] - user[np.newaxis, :, 1]) * 10.0
+        rounded = np.round(np.sqrt(delta_c * delta_c + delta_h * delta_h), 2).ravel()
+
+        # Row-major flattening has the same i-then-j order as the original
+        # nested loops. A stable sort therefore preserves identical tie order.
+        order = np.argsort(rounded, kind="stable")
+        user_count = len(user_points)
+        return [
+            (int(flat // user_count), int(flat % user_count), float(rounded[flat]))
+            for flat in order
+        ]
 
     def _process_single_molecule(self, mol_id, db_points, user_points, h_type=None):
         if self.CH_merge == "N":
@@ -209,7 +226,8 @@ class UserPointMatcher:
             used_db = set()
             used_user = set()  # 每个分子独立使用
 
-            for d in sorted(distances, key=lambda x: x[2]):
+            # _calculate_distances already returns this exact stable ordering.
+            for d in distances:
                 db_idx, user_idx, dist = d
                 if db_idx not in used_db and user_idx not in used_user:
                     db_entry = db_points[db_idx]
@@ -225,6 +243,9 @@ class UserPointMatcher:
                     )
                     used_db.add(db_idx)
                     used_user.add(user_idx)
+
+                    if len(used_db) == len(db_points) or len(used_user) == len(user_points):
+                        break
 
             # 填充未匹配的数据库点
             for idx, db_entry in enumerate(db_points):

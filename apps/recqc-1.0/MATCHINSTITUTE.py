@@ -13,100 +13,140 @@ class ProductBestCompare(ProductMatchData):
         self.get_best_match_data()
 
     def get_best_match_data(self):
+        _, match_data_list = next(iter(self.all_match_data_dict.items()))
+        user_shifts, user_types = match_data_list
+
         for compound_id, compound_data_list in self.compound_inf_dict.items():
-            combination_id, match_data_list = next(iter(self.all_match_data_dict.items()))
-            if len(match_data_list[0]) >= len(compound_data_list[0]):
-                matches = []
-                used_indices1 = []  # 用于跟踪已使用的索引
-                used_indices2 = []
-                n = len(compound_data_list[1])
-                m = len(match_data_list[0])
-                all_error_dict = {}
-                skeleton_num = len(compound_data_list[3])
+            atom_indices, db_shifts, db_types, substructures = compound_data_list
+            if len(user_shifts) < len(atom_indices):
+                continue
 
-                for i in range(n):
-                    for j in range(m):
-                        a, b = compound_data_list[1][i], match_data_list[0][j]
-                        c, d = compound_data_list[2][i], match_data_list[1][j]
-                        e, f = compound_data_list[0][i], compound_data_list[3]
-                        error_value = self.error_func(a, b)
-                        error_state, type_state = (
-                            self.condition_func1(a, b),
-                            self.condition_func2(c, d),
-                        )
-                        skeleton_state = self.get_skeleton_state(e, f)
-                        all_error_dict[(i, j)] = [
-                            error_value,
-                            error_state,
-                            type_state,
-                            a,
-                            b,
-                            e,
-                            skeleton_state,
-                        ]
-                sorted_items = sorted(all_error_dict.items(), key=lambda item: item[1][0])
+            matches = []
+            used_user_indices = set()
+            matched_db_indices = set()
 
-                for idx, (key, value) in enumerate(sorted_items):
-                    i, j = key  # 解包键 (i, j)
-                    if i in used_indices1 or j in used_indices2:
-                        continue
-                    else:
-                        if (
-                            value[1] == True
-                            and value[2] == 1
-                            or value[1] == True
-                            and value[2] == -1
-                        ):
-                            match_entry = {
-                                value[5]: [
-                                    value[3],
-                                    value[4],
-                                    value[1],
-                                    value[2],
-                                    value[0],
-                                    value[6],
-                                ]
-                            }
-                            matches.append(match_entry)
-                            used_indices1.append(i)
-                            used_indices2.append(j)
-                for idx, (key, value) in enumerate(sorted_items):
-                    i, j = key  # 解包键 (i, j)
-                    if i in used_indices1 or j in used_indices2:
-                        continue
-                    else:
-                        if (
-                            value[1] == False
-                            and value[2] == 1
-                            or value[1] == False
-                            and value[2] == -1
-                        ):
-                            match_entry = {
-                                value[5]: [
-                                    value[3],
-                                    value[4],
-                                    value[1],
-                                    value[2],
-                                    value[0],
-                                    value[6],
-                                ]
-                            }
-                            matches.append(match_entry)
-                            used_indices1.append(i)
-                            used_indices2.append(j)
-                for idx, (key, value) in enumerate(sorted_items):
-                    i, j = key  # 解包键 (i, j)
-                    if i in used_indices1 or j in used_indices2:
-                        continue
-                    else:
-                        match_entry = {
-                            value[5]: [value[3], value[4], value[1], value[2], value[0], value[6]]
-                        }
-                        matches.append(match_entry)
-                        used_indices1.append(i)
-                        used_indices2.append(j)
-                self.best_match_data_dict[(compound_id, skeleton_num)] = matches
-                # ('257', 1): [{20: [54.8, 55.0, True, -1, 0.2, []]}, {25: [33.3, 33.0, True, -1, 0.3, []]}, {3: [127.6, 127.0, True, -1, 0.6, []]}, {5: [123.6, 123.0, True, -1, 0.6, []]},
+            # ReCQC 2.0 stage 1: each database atom takes the nearest unused
+            # type-compatible experimental peak.  The 1.0 ambiguous DEPT labels
+            # (pstq, pt and psq) retain their existing compatibility rules.
+            db_type_priority = {
+                "Primaries": 0,
+                "Secondaries": 1,
+                "Tertiaries": 2,
+                "Quaternaries": 3,
+            }
+            typed_db_order = sorted(
+                range(len(db_shifts)),
+                key=lambda index: (db_type_priority.get(db_types[index], 4), index),
+            )
+            for db_index in typed_db_order:
+                db_shift = db_shifts[db_index]
+                db_type = db_types[db_index]
+                compatible_user_indices = [
+                    user_index
+                    for user_index, user_type in enumerate(user_types)
+                    if user_index not in used_user_indices
+                    and self.condition_func2(db_type, user_type) != 0
+                ]
+                user_index = self._nearest_unused_user(
+                    db_shift, user_shifts, compatible_user_indices
+                )
+                if user_index is None:
+                    continue
+                matches.append(
+                    self._make_match_entry(
+                        db_index,
+                        user_index,
+                        atom_indices,
+                        db_shifts,
+                        db_types,
+                        substructures,
+                        user_shifts,
+                        user_types,
+                    )
+                )
+                matched_db_indices.add(db_index)
+                used_user_indices.add(user_index)
+
+            # ReCQC 2.0 stage 2: pair remaining database atoms with the nearest
+            # still-unused peaks without a type restriction.  Thresholds are
+            # applied only after pairing when atom colours/scores are assigned.
+            for db_index, db_shift in enumerate(db_shifts):
+                if db_index in matched_db_indices:
+                    continue
+                user_type_priority = {
+                    "Quaternaries": 0,
+                    "Tertiaries": 1,
+                    "Secondaries": 2,
+                    "Primaries": 3,
+                    "psq": 4,
+                    "pt": 5,
+                    "pstq": 6,
+                }
+                remaining_user_indices = sorted(
+                    (
+                        user_index
+                        for user_index in range(len(user_shifts))
+                        if user_index not in used_user_indices
+                    ),
+                    key=lambda index: (
+                        user_type_priority.get(user_types[index], 7),
+                        index,
+                    ),
+                )
+                user_index = self._nearest_unused_user(
+                    db_shift, user_shifts, remaining_user_indices
+                )
+                if user_index is None:
+                    break
+                matches.append(
+                    self._make_match_entry(
+                        db_index,
+                        user_index,
+                        atom_indices,
+                        db_shifts,
+                        db_types,
+                        substructures,
+                        user_shifts,
+                        user_types,
+                    )
+                )
+                matched_db_indices.add(db_index)
+                used_user_indices.add(user_index)
+
+            skeleton_num = len(substructures)
+            self.best_match_data_dict[(compound_id, skeleton_num)] = matches
+
+    @staticmethod
+    def _nearest_unused_user(db_shift, user_shifts, candidate_indices):
+        if not candidate_indices:
+            return None
+        # Equal errors select the first peak, matching NumPy argmin in 2.0.
+        return min(candidate_indices, key=lambda index: abs(db_shift - user_shifts[index]))
+
+    def _make_match_entry(
+        self,
+        db_index,
+        user_index,
+        atom_indices,
+        db_shifts,
+        db_types,
+        substructures,
+        user_shifts,
+        user_types,
+    ):
+        db_shift = db_shifts[db_index]
+        user_shift = user_shifts[user_index]
+        atom_index = atom_indices[db_index]
+        return {
+            atom_index: [
+                db_shift,
+                user_shift,
+                self.condition_func1(db_shift, user_shift),
+                self.condition_func2(db_types[db_index], user_types[user_index]),
+                self.error_func(db_shift, user_shift),
+                self.get_skeleton_state(atom_index, substructures),
+            ]
+        }
 
     def condition_func1(self, a, b):
         if abs(a - b) <= self.threshold:
@@ -199,6 +239,10 @@ class ScoreInstitution(object):
         self.threshold_green = productBestData_obj.threshold
         self.best_match_data_dict = productBestData_obj.best_match_data_dict
         self.max_skeleton_score = max_skeleton_score
+        if self.threshold_green >= self.threshold_yellow:
+            raise ValueError("The yellow threshold must be greater than the green threshold")
+        if not 0 <= self.max_skeleton_score <= 1:
+            raise ValueError("The skeleton similarity threshold must be between 0 and 1")
         self.id_score_dict = {}
         self.get_kinds_scores()
 
@@ -279,59 +323,55 @@ class ScoreInstitution(object):
             sorted(self.id_score_dict.items(), key=lambda item: item[1][0], reverse=True)
         )
 
-    def get_final_skeleton_index(self, satisfied_skeketon):
-        final_skeleton_index = []
-        sub_skeleton_green_score_list = []
-        if len(satisfied_skeketon) == 0:
-            return final_skeleton_index
-        else:
-            for (
-                k,
-                v,
-            ) in satisfied_skeketon.items():  # {0: [{7: ['green',error]}, {14: True}, {15: True}, {9: True}, {8: False}, {10: False}], 1: [{7: True}, {20: True}, {9: True}, {11: True}, {16: True}, {18: False}]}
-                add_ske_score = 0
-                index_list = []
-                for index_T_dict in v:
-                    for index, state in index_T_dict.items():
-                        index_list.append((index, state[0], state[1]))
-                        if state == "green":
-                            add_ske_score += self.green_index_score()
-                        elif state == "yellow":
-                            add_ske_score += self.yellow_index_score(state[1])
-                        elif state == "orange":
-                            add_ske_score += self.orange_index_score(state[1])
-                if len(v) != 0:
-                    sub_score = add_ske_score / len(v)
-                    dict = {
-                        k: [sub_score, index_list]
-                    }  # [0.5, [(16, 'green',error), (18, True), (14, True), (8, False), (10, False), (9, False)]]
+    def get_final_skeleton_index(self, satisfied_skeleton):
+        """Select the largest high-quality union of detected substructures.
 
-                    sub_skeleton_green_score_list.append(dict)
-            sub_skeleton_green_score_list = sorted(
-                sub_skeleton_green_score_list, key=lambda d: list(d.values())[0][0], reverse=True
+        Each atom has one colour/error state from the carbon match.  Candidate
+        substructures are ranked by their mean atom score (then by size), and a
+        candidate is retained only when the score of the cumulative atom union
+        remains above the user-selected skeleton threshold.
+        """
+        ranked_substructures = []
+        for skeleton_index, atom_state_dicts in satisfied_skeleton.items():
+            atoms = {}
+            for atom_state_dict in atom_state_dicts:
+                for atom_index, state in atom_state_dict.items():
+                    color, error = state
+                    atoms[atom_index] = (color, error)
+            if not atoms:
+                continue
+            mean_score = sum(
+                self._atom_state_score(color, error) for color, error in atoms.values()
+            ) / len(atoms)
+            ranked_substructures.append(
+                (mean_score, len(atoms), skeleton_index, atoms)
             )
 
-        judge_list = []
-        for dict in sub_skeleton_green_score_list:  # [{0: [0.8333333333333334, [(12, 'green',error), (5, True), (8, True), (7, True), (11, False), (6, True)]]}, {1: [0.8333333333333334, [(10, True), (5, True), (7, True), (16, True), (9, True), (14, False)]]}]
-            for index_list in dict.values():
-                judge_list.extend(index_list[1])
-                judge_list = list(dict.fromkeys(judge_list))
-                total_score = 0
-                for index_state in judge_list:
-                    if index_state[1] == "green":
-                        total_score += self.green_index_score()
-                    elif index_state[1] == "yellow":
-                        total_score += self.yellow_index_score(index_state[2])
-                    elif index_state[1] == "orange":
-                        total_score += self.orange_index_score(index_state[2])
-                if total_score / len(judge_list) >= self.max_skeleton_score:
-                    final_skeleton_index = [i[0] for i in judge_list]
-                else:
-                    break
+        ranked_substructures.sort(key=lambda item: (item[0], item[1]), reverse=True)
 
-        final_skeleton_index = list(set(final_skeleton_index))
+        selected_atoms = {}
+        for _, _, _, candidate_atoms in ranked_substructures:
+            trial_atoms = dict(selected_atoms)
+            trial_atoms.update(candidate_atoms)
+            trial_score = sum(
+                self._atom_state_score(color, error)
+                for color, error in trial_atoms.values()
+            ) / len(trial_atoms)
+            if trial_score >= self.max_skeleton_score:
+                selected_atoms = trial_atoms
+            else:
+                break
 
-        return final_skeleton_index
+        return sorted(selected_atoms)
+
+    def _atom_state_score(self, color, error):
+        if color == "green":
+            return self.green_index_score()
+        if color == "yellow":
+            return self.yellow_index_score(error)
+        if color == "orange":
+            return self.orange_index_score(error)
+        return 0.0
 
     def none_ske_score_change_rate(self, c_num, final_skeleton_index, orin_none_skeleton_score):
         none_skeleton_num = c_num - len(final_skeleton_index)

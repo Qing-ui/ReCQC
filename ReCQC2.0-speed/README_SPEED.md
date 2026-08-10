@@ -34,7 +34,9 @@ sent to `2638614209@qq.com`.
 
 ## Compatibility and logic
 
-- Carbon, environment, and HSQC matching/scoring formulas are unchanged.
+- Carbon atom scoring, environment scoring, and HSQC scoring formulas are
+  unchanged. Carbon assignment uses the CORD-NMR full-score method and globally
+  maximizes the total green-plus-yellow atom score under the selected thresholds.
 - SQLite writes are batched and serialized for performance.
 - RDKit drawing options are guarded for compatibility across supported versions.
 - GUI result plots are generated before their result windows are opened.

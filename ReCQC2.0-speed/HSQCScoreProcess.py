@@ -167,13 +167,15 @@ class UserPointMatcher:
         self.db_path = db_path
         self.user_points = user_points
         self.mode = mode
+        self.CH_merge = CH_merge
         self._validate_input()
         self._create_result_table()
-        self.CH_merge = CH_merge
 
     def _validate_input(self):
+        if self.CH_merge not in {"Y", "N"}:
+            raise ValueError("CH_merge must be Y or N")
         if self.mode == 1:
-            if not ("All_type" in self.user_points and "All_type" in self.user_points):
+            if "All_type" not in self.user_points:
                 raise ValueError("Mode 1 requires All_type key")
         elif self.mode == 2:
             if not ("type13" in self.user_points and "type2" in self.user_points):

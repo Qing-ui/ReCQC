@@ -21,9 +21,13 @@ class SDFFileSelector:
         """通过GUI选择多个文件"""
         root = tk.Tk()
         root.withdraw()
-        files = filedialog.askopenfilenames(
-            title="选择SDF文件", filetypes=[("SDF文件", "*.sdf"), ("所有文件", "*.*")]
-        )
+        try:
+            files = filedialog.askopenfilenames(
+                title="选择SDF文件",
+                filetypes=[("SDF文件", "*.sdf"), ("所有文件", "*.*")],
+            )
+        finally:
+            root.destroy()
         self.selected_files = list(files)
         return self._validate_files()
 
@@ -31,7 +35,10 @@ class SDFFileSelector:
         """通过GUI选择目录并扫描SDF文件"""
         root = tk.Tk()
         root.withdraw()
-        folder = filedialog.askdirectory(title="选择包含SDF文件的目录")
+        try:
+            folder = filedialog.askdirectory(title="选择包含SDF文件的目录")
+        finally:
+            root.destroy()
         self.selected_files = self._find_sdf_in_dir(folder) if folder else []
         return self._validate_files()
 
@@ -61,4 +68,5 @@ class SDFFileSelector:
                 print(f"忽略非SDF文件: {f}")
                 continue
             valid_files.append(f)
+        self.selected_files = valid_files
         return valid_files

@@ -2,7 +2,6 @@ import json
 import logging
 import os
 import sqlite3
-import threading
 from collections import Counter, deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
@@ -10,10 +9,6 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 from tqdm import tqdm
-
-# 线程本地存储用于数据库连接
-thread_local = threading.local()
-
 
 class GreedyMatcher:
     def __init__(
@@ -45,6 +40,9 @@ class GreedyMatcher:
 
     def _validate_inputs(self):
         """参数校验（支持两种模式）"""
+        if self.C_merge not in {"Y", "N"}:
+            raise ValueError("C_merge must be 'Y' or 'N'")
+
         if self.mode == "typed":
             if not isinstance(self.user_data, dict) or any(
                 not isinstance(v, list) for v in self.user_data.values()
@@ -65,19 +63,18 @@ class GreedyMatcher:
 
     @contextmanager
     def _get_conn(self):
-        """线程安全的数据库连接管理"""
-        if not hasattr(thread_local, "conn"):
-            thread_local.conn = sqlite3.connect(
-                self.db_path, check_same_thread=False, timeout=30, isolation_level=None
-            )
-            thread_local.conn.execute("PRAGMA journal_mode=WAL")
-            thread_local.conn.execute("PRAGMA synchronous=NORMAL")
-            thread_local.conn.execute("PRAGMA cache_size=-20000")  # 20MB缓存
+        """Open and close one connection for the current operation."""
+        conn = sqlite3.connect(self.db_path, timeout=30, isolation_level=None)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA cache_size=-20000")
         try:
-            yield thread_local.conn
+            yield conn
         except sqlite3.DatabaseError:
-            thread_local.conn.rollback()
+            conn.rollback()
             raise
+        finally:
+            conn.close()
 
     def _create_indexes(self):
         """创建必要索引"""
@@ -120,13 +117,24 @@ class GreedyMatcher:
                 JOIN carbons c ON m.mol_id = c.mol_id
                 WHERE m.carbon_count BETWEEN ? AND ?
                   AND m.fw BETWEEN ? AND ?
-                  AND m.carbon_count <= ?
+                  AND (
+                      (? = 'N' AND m.carbon_count <= ?)
+                      OR
+                      (? = 'Y' AND (
+                          SELECT COUNT(DISTINCT c2.c_shift)
+                          FROM carbons c2
+                          WHERE c2.mol_id = m.mol_id
+                      ) <= ?)
+                  )
             """
             params = (
                 self.c_range[0],
                 self.c_range[1],
                 self.fw_range[0],
                 self.fw_range[1],
+                self.C_merge,
+                self.user_total,
+                self.C_merge,
                 self.user_total,
             )
             rows = conn.execute(query, params).fetchall()
@@ -622,12 +630,17 @@ class GreedyMatcher:
         with self._get_conn() as conn:
             invalid = conn.execute(
                 """
-                SELECT COUNT(*)
+                SELECT COUNT(DISTINCT gm.mol_id)
                 FROM greedy_matches gm
                 JOIN molecules m ON gm.mol_id = m.mol_id
-                WHERE m.carbon_count > ?
+                WHERE (? = 'N' AND m.carbon_count > ?)
+                   OR (? = 'Y' AND (
+                       SELECT COUNT(DISTINCT c.c_shift)
+                       FROM carbons c
+                       WHERE c.mol_id = m.mol_id
+                   ) > ?)
             """,
-                (self.user_total,),
+                (self.C_merge, self.user_total, self.C_merge, self.user_total),
             ).fetchone()[0]
 
             if invalid > 0:
