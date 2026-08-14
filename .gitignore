@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+.Python
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Environments
+.venv/
+venv/
+env/
+.conda/
+
+# IDEs and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Packaging
+build/
+dist/
+*.egg-info/
+*.spec
+
+# ReCQC runtime outputs
+*.db
+*.sqlite
+*.sqlite3
+ch_match_plots/
+combined_results/
+molecule_plots/
+results/
+output/
+outputs/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.bak
+~$*
+tmp/

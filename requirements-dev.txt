@@ -1,0 +1,4 @@
+-r requirements.txt
+-r apps/recqc-1.0/requirements.txt
+-r apps/recqc-hungarian/requirements.txt
+ruff==0.16.2

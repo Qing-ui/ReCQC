@@ -1,0 +1,36 @@
+name: Bug report
+description: Report a reproducible problem in ReCQC.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: dropdown
+    id: version
+    attributes:
+      label: Affected version
+      options:
+        - ReCQC 1.0
+        - ReCQC 2.0
+        - ReCQC Hungarian
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Problem
+      description: Describe what happened and what you expected.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      description: Include minimal, non-confidential sample data when possible.
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Windows, Python, RDKit, and ReCQC versions.
+    validations:
+      required: true

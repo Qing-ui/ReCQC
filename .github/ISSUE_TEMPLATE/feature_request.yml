@@ -1,0 +1,29 @@
+name: Feature request
+description: Propose a focused improvement to ReCQC.
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: use_case
+    attributes:
+      label: Scientific or user need
+      description: Explain the workflow that is currently difficult or impossible.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+    validations:
+      required: true
+  - type: dropdown
+    id: target
+    attributes:
+      label: Target version
+      options:
+        - ReCQC 1.0
+        - ReCQC 2.0
+        - ReCQC Hungarian
+        - All three versions
+    validations:
+      required: true

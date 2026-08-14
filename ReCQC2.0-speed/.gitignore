@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.py[cod]
+chem_data.db
+combined_results/
+molecule_plots/
+ch_match_plots/
+dist/
+.pyinstaller-build/
+.pyinstaller-spec/
+*.spec
