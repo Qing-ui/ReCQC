@@ -439,6 +439,30 @@ class SpeedMatchingTests(unittest.TestCase):
 
             self.assertEqual([(0, 10.0, 1), (1, None, 0)], rows)
 
+    def test_speed_gui_repairs_missing_windowed_console_streams(self):
+        gui_path = VERSIONS["speed"] / "gui.py"
+        module_name = "test_speed_gui_console_streams"
+        spec = importlib.util.spec_from_file_location(module_name, gui_path)
+        module = importlib.util.module_from_spec(spec)
+        original_stdout, original_stderr = sys.stdout, sys.stderr
+        sys.path.insert(0, str(VERSIONS["speed"]))
+        try:
+            sys.stdout = None
+            sys.stderr = None
+            spec.loader.exec_module(module)
+            self.assertIsNotNone(sys.stdout)
+            self.assertIsNotNone(sys.stderr)
+            sys.stdout.write("")
+            sys.stderr.write("")
+        finally:
+            repaired_stdout, repaired_stderr = sys.stdout, sys.stderr
+            sys.stdout = original_stdout
+            sys.stderr = original_stderr
+            for stream in (repaired_stdout, repaired_stderr):
+                if stream not in (original_stdout, original_stderr) and stream is not None:
+                    stream.close()
+            sys.path.pop(0)
+
 
 class CarbonScoringBoundaryTests(unittest.TestCase):
     def test_zero_ppm_is_a_real_shift_in_every_2x_version(self):

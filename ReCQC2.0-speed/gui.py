@@ -2,6 +2,7 @@ import json
 import os
 import queue
 import re
+import sys
 import threading
 import tkinter as tk
 from datetime import datetime
@@ -14,6 +15,17 @@ from HSQCScorerResult import *
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from PIL import ImageTk
 from PROCESSSDFFILES import SDFFileSelector
+
+
+def configure_console_streams():
+    """Keep console-oriented progress and diagnostics safe in windowed builds."""
+    if sys.stdout is None:
+        sys.stdout = open(os.devnull, "w", encoding="utf-8")
+    if sys.stderr is None:
+        sys.stderr = open(os.devnull, "w", encoding="utf-8")
+
+
+configure_console_streams()
 
 
 class ChemTheme:
