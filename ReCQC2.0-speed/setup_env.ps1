@@ -25,4 +25,4 @@ $venvPython = Join-Path $venvPath "Scripts\python.exe"
 & $venvPython -m pip install --upgrade pip
 & $venvPython -m pip install -r requirements.txt
 
-Write-Output "Environment ready. Run .\run_gui.ps1 to start ReCQC 2.0 Speed."
+Write-Output "Environment ready. Run .\run_gui.ps1 to start ReCQC 2.6."

@@ -8,7 +8,7 @@ class CarbonCoordinateExtractor:
 
     def _create_table(self):
         """创建坐标存储表"""
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn, conn:
             conn.execute("DROP TABLE IF EXISTS carbon_h_coordinates")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS carbon_h_coordinates (
@@ -75,7 +75,7 @@ class CarbonCoordinateExtractor:
 
     def process_all(self):
         """批量处理所有分子（修正进度显示）"""
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn, conn:
             conn.row_factory = sqlite3.Row
 
             # 获取总碳原子数（h_count>0且c_shift存在）
@@ -148,7 +148,9 @@ class CarbonCoordinateExtractor:
 
 import json
 import sqlite3
+from contextlib import closing
 
+import numpy as np
 from tqdm import tqdm
 
 
@@ -158,8 +160,8 @@ class UserPointMatcher:
         db_path: str,
         user_points: dict,
         mode: int = 1,
-        c_tolerance: float = None,
-        h_tolerance: float = None,
+        c_tolerance: float = 1.0,
+        h_tolerance: float = 0.2,
         CH_merge="N",
     ):
         self.db_path = db_path
@@ -185,9 +187,11 @@ class UserPointMatcher:
                 raise ValueError("Mode 3 requires the type1/type2/type3 keys")
         else:
             raise ValueError("Invalid Mode Selection (1-3)")
+        if self.c_tol is None or self.h_tol is None or self.c_tol <= 0 or self.h_tol <= 0:
+            raise ValueError("Positive C and H tolerances are required for HSQC matching")
 
     def _create_result_table(self):
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn, conn:
             conn.execute("DROP TABLE IF EXISTS user_matches")
             conn.execute("""
                 CREATE TABLE user_matches (
@@ -211,36 +215,73 @@ class UserPointMatcher:
         return float((delta_c**2 + delta_h**2) ** 0.5)
 
     def _in_tolerance(self, db_point, user_point):
-        if self.c_tol is None or self.h_tol is None:
-            return False
         db_c, db_h = db_point
         user_c, user_h = user_point
         return abs(db_c - user_c) <= self.c_tol and abs(db_h - user_h) <= self.h_tol
 
     def _build_cost_matrix(self, db_coords, user_points):
-        import numpy as np
-
         n_rows = len(db_coords)
         n_cols = len(user_points)
         if n_rows == 0:
             return np.zeros((0, 0), dtype=np.float64)
 
-        BIG = 1e6
-        DUMMY = 2e6
         total_cols = n_cols + n_rows
-        cost = np.full((n_rows, total_cols), DUMMY, dtype=np.float64)
+        cost = np.full((n_rows, total_cols), 1e6, dtype=np.float64)
 
         for i, db_point in enumerate(db_coords):
             for j, user_point in enumerate(user_points):
                 dist = self._point_distance(db_point, user_point)
-                if self.c_tol is not None and self.h_tol is not None:
-                    if self._in_tolerance(db_point, user_point):
-                        cost[i, j] = dist
-                    else:
-                        cost[i, j] = BIG + dist
-                else:
-                    cost[i, j] = dist
+                cost[i, j] = (0.0 if self._in_tolerance(db_point, user_point) else 1e4) + dist
+            cost[i, n_cols + i] = 1e6
         return cost
+
+    @staticmethod
+    def _linear_sum_assignment(cost_matrix):
+        cost = np.asarray(cost_matrix, dtype=np.float64)
+        n, m = cost.shape
+        if n == 0:
+            return [], []
+        if n > m:
+            raise ValueError("The number of rows must not exceed the number of columns")
+        u = np.zeros(n + 1)
+        v = np.zeros(m + 1)
+        p = np.zeros(m + 1, dtype=np.int32)
+        way = np.zeros(m + 1, dtype=np.int32)
+        for i in range(1, n + 1):
+            p[0] = i
+            j0 = 0
+            minv = np.full(m + 1, np.inf)
+            used = np.zeros(m + 1, dtype=bool)
+            while True:
+                used[j0] = True
+                i0 = p[j0]
+                delta = np.inf
+                j1 = 0
+                for j in range(1, m + 1):
+                    if not used[j]:
+                        cur = cost[i0 - 1, j - 1] - u[i0] - v[j]
+                        if cur < minv[j]:
+                            minv[j] = cur
+                            way[j] = j0
+                        if minv[j] < delta:
+                            delta, j1 = minv[j], j
+                for j in range(m + 1):
+                    if used[j]:
+                        u[p[j]] += delta
+                        v[j] -= delta
+                    else:
+                        minv[j] -= delta
+                j0 = j1
+                if p[j0] == 0:
+                    break
+            while True:
+                j1 = way[j0]
+                p[j0] = p[j1]
+                j0 = j1
+                if j0 == 0:
+                    break
+        pairs = sorted((p[j] - 1, j - 1) for j in range(1, m + 1) if p[j])
+        return [r for r, _ in pairs], [c for _, c in pairs]
 
     def _solve_assignment(self, db_coords, user_points):
         n_rows = len(db_coords)
@@ -252,36 +293,11 @@ class UserPointMatcher:
 
         cost = self._build_cost_matrix(db_coords, user_points)
 
-        try:
-            from scipy.optimize import linear_sum_assignment
-
-            row_ind, col_ind = linear_sum_assignment(cost)
-            assigned = {}
-            for r, c in zip(row_ind, col_ind):
-                assigned[r] = c if c < n_cols else None
-            for i in range(n_rows):
-                assigned.setdefault(i, None)
-            return assigned
-        except Exception:
-            pairs = []
-            for i, db_point in enumerate(db_coords):
-                for j, user_point in enumerate(user_points):
-                    dist = self._point_distance(db_point, user_point)
-                    in_box = self._in_tolerance(db_point, user_point)
-                    pairs.append((0 if in_box else 1, dist, i, j))
-            pairs.sort(key=lambda x: (x[0], x[1]))
-            assigned = {}
-            used_rows = set()
-            used_cols = set()
-            for _, _, i, j in pairs:
-                if i in used_rows or j in used_cols:
-                    continue
-                assigned[i] = j
-                used_rows.add(i)
-                used_cols.add(j)
-            for i in range(n_rows):
-                assigned.setdefault(i, None)
-            return assigned
+        row_ind, col_ind = self._linear_sum_assignment(cost)
+        assigned = {r: c if c < n_cols else None for r, c in zip(row_ind, col_ind)}
+        for i in range(n_rows):
+            assigned.setdefault(i, None)
+        return assigned
 
     def _process_single_molecule(self, mol_id, db_points, user_points, h_type=None):
         if self.CH_merge == "N":
@@ -369,7 +385,7 @@ class UserPointMatcher:
             return matches
 
     def _match_mode1(self):
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn, conn:
             molecules = {}
             for row in conn.execute(
                 "SELECT mol_id, c_index, h_count, coordinates FROM carbon_h_coordinates"
@@ -391,7 +407,7 @@ class UserPointMatcher:
         return all_matches
 
     def _match_mode2(self):
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn, conn:
             molecules = {}
             for row in conn.execute("""
                 SELECT mol_id, c_index, h_count, coordinates
@@ -417,7 +433,7 @@ class UserPointMatcher:
         return all_matches
 
     def _match_by_type(self, h_type, user_points):
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn, conn:
             molecules = {}
             for row in conn.execute(
                 """
@@ -443,7 +459,7 @@ class UserPointMatcher:
         return all_matches
 
     def process(self):
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn, conn:
             conn.execute("DELETE FROM user_matches")
             matches = []
 
@@ -494,7 +510,7 @@ class MoleculeScoreCalculator:
 
     def _create_score_table(self):
         """创建评分存储表"""
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn, conn:
             conn.execute("DROP TABLE IF EXISTS molecule_ch_scores")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS molecule_ch_scores (
@@ -550,7 +566,7 @@ class MoleculeScoreCalculator:
 
     def process_all(self):
         """批量处理所有分子"""
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn, conn:
             conn.row_factory = sqlite3.Row
             # 获取所有匹配数据
             cursor = conn.execute("""

@@ -13,8 +13,8 @@ ReCQC 是一款基于 13C NMR 与 HSQC 数据进行天然产物混合物去重�
 | --- | --- | --- | --- |
 | ReCQC 1.0 | Released / 正式版 | [`apps/recqc-1.0`](apps/recqc-1.0) | Original 13C NMR dereplication workflow |
 | ReCQC 2.0 | Released / 正式版 | [`apps/recqc-2.0`](apps/recqc-2.0) | 13C NMR and HSQC database strategies |
-| ReCQC 2.0 Speed | Released / 正式版 | [`ReCQC2.0-speed`](ReCQC2.0-speed) | ReCQC 2.0 Speed release |
-| ReCQC (Hungarian) | Released / 正式版 | [`apps/recqc-hungarian`](apps/recqc-hungarian) | Separately versioned release |
+| ReCQC 2.6 | Released / 正式版 | [`ReCQC2.0-speed`](ReCQC2.0-speed) | Performance release |
+| ReCQC 2.5 | Released / 正式版 | [`apps/recqc-hungarian`](apps/recqc-hungarian) | Matching release |
 
 All four implementations are maintained as formal ReCQC projects. ReCQC 1.0
 and 2.0 are the versions described in the associated publication. Alternative

@@ -1,4 +1,6 @@
 import importlib.util
+import gc
+import json
 import os
 import sqlite3
 import sys
@@ -96,6 +98,41 @@ class SymmetryFilterTests(unittest.TestCase):
 
 
 class SdfIsolationTests(unittest.TestCase):
+    def test_published_hydrogen_shift_property_generates_hsqc_coordinates(self):
+        for version in ("hungarian", "speed"):
+            with self.subTest(version=version), tempfile.TemporaryDirectory(dir=ROOT) as temp_dir:
+                temp_path = Path(temp_dir)
+                sdf_path = temp_path / "published-fields.sdf"
+                writer = Chem.SDWriter(str(sdf_path))
+                try:
+                    mol = Chem.AddHs(Chem.MolFromSmiles("CC"))
+                    mol.SetProp("ID", "published-fields")
+                    mol.SetProp("FW", "30.07")
+                    mol.SetProp("Predicted 13C shifts", "1C[1] 10.0\n2C[2] 20.0")
+                    mol.SetProp(
+                        "Predicted 1H shifts",
+                        "1a[3] 1.0\n1b[4] 1.1\n1c[5] 1.2\n"
+                        "2a[6] 1.3\n2b[7] 1.4\n2c[8] 1.5",
+                    )
+                    writer.write(mol)
+                finally:
+                    writer.close()
+
+                db_path = temp_path / "coordinates.db"
+                processor = load_module(version, "PROCESSSDFFILES.py").SDFBatchProcessor
+                report = processor.process_files_atomically([str(sdf_path)], str(db_path))
+                self.assertEqual(1, report["accepted"])
+
+                extractor_class = load_module(version, "HSQCScoreProcess.py").CarbonCoordinateExtractor
+                extractor_class(str(db_path)).process_all()
+                with closing(sqlite3.connect(db_path)) as conn:
+                    count = conn.execute(
+                        "SELECT COUNT(*) FROM carbon_h_coordinates"
+                    ).fetchone()[0]
+                self.assertEqual(2, count)
+                del extractor_class, processor
+                gc.collect()
+
     def test_bad_record_is_skipped_without_stopping_later_records(self):
         for version in VERSIONS:
             with self.subTest(version=version), tempfile.TemporaryDirectory(dir=ROOT) as temp_dir:
@@ -386,6 +423,50 @@ class SpeedMatchingTests(unittest.TestCase):
 
         self.assertEqual(2, len(matches))
         self.assertEqual([], unmatched)
+
+    def test_hsqc_assignment_matches_each_versions_carbon_objective(self):
+        for version in ("hungarian", "speed"):
+            with self.subTest(version=version):
+                module = load_module(version, "HSQCScoreProcess.py")
+                matcher = module.UserPointMatcher.__new__(module.UserPointMatcher)
+                matcher.CH_merge = "N"
+                matcher.c_tol = 1.0
+                matcher.h_tol = 0.2
+                db_points = [(0, 1, (10.0, 1.0)), (1, 1, (11.0, 1.0))]
+                user_points = [(10.9, 1.0), (9.0, 1.0)]
+
+                matches = matcher._process_single_molecule(1, db_points, user_points)
+                assigned = {
+                    row[1]: tuple(json.loads(row[3]))
+                    for row in matches
+                    if row[3] != "[0, 0]"
+                }
+                in_tolerance = sum(
+                    abs(entry[2][0] - assigned[entry[0]][0]) <= 1.0
+                    and abs(entry[2][1] - assigned[entry[0]][1]) <= 0.2
+                    for entry in db_points
+                    if entry[0] in assigned
+                )
+
+                self.assertEqual(2, in_tolerance)
+
+    def test_speed_hsqc_merge_assigns_coordinate_groups_and_keeps_placeholders(self):
+        module = load_module("speed", "HSQCScoreProcess.py")
+        matcher = module.UserPointMatcher.__new__(module.UserPointMatcher)
+        matcher.CH_merge = "Y"
+        matcher.c_tol = 1.0
+        matcher.h_tol = 0.2
+        db_points = [
+            (0, 1, (10.0, 1.0)),
+            (1, 2, (10.0, 1.0)),
+            (2, 1, (20.0, 2.0)),
+        ]
+
+        matches = matcher._process_single_molecule(1, db_points, [(10.0, 1.0)])
+
+        self.assertEqual(2, sum(row[3] != "[0, 0]" for row in matches))
+        self.assertEqual(1, sum(row[3] == "[0, 0]" for row in matches))
+        self.assertEqual({0, 1}, {row[1] for row in matches if row[3] != "[0, 0]"})
 
     def test_speed_keeps_unmatched_carbons_as_zero_score_placeholders(self):
         with tempfile.TemporaryDirectory(dir=ROOT) as temp_dir:

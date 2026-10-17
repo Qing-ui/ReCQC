@@ -8,7 +8,7 @@ class CarbonCoordinateExtractor:
 
     def _create_table(self):
         """创建坐标存储表"""
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn, conn:
             conn.execute("DROP TABLE IF EXISTS carbon_h_coordinates")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS carbon_h_coordinates (
@@ -78,7 +78,7 @@ class CarbonCoordinateExtractor:
 
     def process_all(self):
         """批量处理所有分子（修正进度显示）"""
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn, conn:
             conn.row_factory = sqlite3.Row
 
             # 获取总碳原子数（h_count>0且c_shift存在）
@@ -156,17 +156,58 @@ class CarbonCoordinateExtractor:
 
 import json
 import sqlite3
+from contextlib import closing
 
 import numpy as np
 from tqdm import tqdm
 
 
+def _calculate_hsqc_point_score(db_point, user_point, c_tolerance, h_tolerance):
+    if tuple(user_point) == (0, 0):
+        return 0.0
+
+    db_c, db_h = db_point
+    user_c, user_h = user_point
+    if (
+        db_c - c_tolerance <= user_c <= db_c + c_tolerance
+        and db_h - h_tolerance <= user_h <= db_h + h_tolerance
+    ):
+        return 1.0
+
+    delta_c = user_c - db_c
+    delta_h = user_h - db_h
+    if delta_c == 0:
+        region = "top" if delta_h > 0 else "bottom"
+    elif abs(delta_h / delta_c) > h_tolerance / c_tolerance:
+        region = "top" if delta_h > 0 else "bottom"
+    else:
+        region = "right" if delta_c > 0 else "left"
+
+    if region in ("left", "right"):
+        denominator = abs(delta_c)
+        score = c_tolerance / denominator if denominator else 0.0
+    else:
+        denominator = abs(delta_h)
+        score = h_tolerance / denominator if denominator else 0.0
+    return max(0.0, min(score, 1.0))
+
+
 class UserPointMatcher:
-    def __init__(self, db_path: str, user_points: dict, mode: int = 1, CH_merge="N"):
+    def __init__(
+        self,
+        db_path: str,
+        user_points: dict,
+        mode: int = 1,
+        CH_merge="N",
+        c_tolerance: float = 1.0,
+        h_tolerance: float = 0.2,
+    ):
         self.db_path = db_path
         self.user_points = user_points
         self.mode = mode
         self.CH_merge = CH_merge
+        self.c_tol = float(c_tolerance)
+        self.h_tol = float(h_tolerance)
         self._validate_input()
         self._create_result_table()
 
@@ -185,8 +226,11 @@ class UserPointMatcher:
         else:
             raise ValueError("Invalid Mode Selection (1-3)")
 
+        if self.c_tol <= 0 or self.h_tol <= 0:
+            raise ValueError("HSQC tolerances must be positive")
+
     def _create_result_table(self):
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn, conn:
             conn.execute("DROP TABLE IF EXISTS user_matches")
             conn.execute("""
                 CREATE TABLE user_matches (
@@ -222,36 +266,124 @@ class UserPointMatcher:
             for flat in order
         ]
 
+    @staticmethod
+    def _point_distance(db_point, user_point):
+        delta_c = db_point[0] - user_point[0]
+        delta_h = (db_point[1] - user_point[1]) * 10.0
+        return float(np.hypot(delta_c, delta_h))
+
+    @staticmethod
+    def _linear_sum_assignment(cost_matrix):
+        """Solve a rectangular minimum-cost assignment using NumPy."""
+        cost = np.asarray(cost_matrix, dtype=np.float64)
+        row_count, column_count = cost.shape
+        if row_count == 0:
+            return [], []
+        if row_count > column_count:
+            raise ValueError("The number of rows must not exceed the number of columns")
+
+        row_potential = np.zeros(row_count + 1, dtype=np.float64)
+        column_potential = np.zeros(column_count + 1, dtype=np.float64)
+        matched_row = np.zeros(column_count + 1, dtype=np.int32)
+        predecessor = np.zeros(column_count + 1, dtype=np.int32)
+
+        for row in range(1, row_count + 1):
+            matched_row[0] = row
+            current_column = 0
+            minimum_cost = np.full(column_count + 1, np.inf, dtype=np.float64)
+            visited = np.zeros(column_count + 1, dtype=bool)
+            while True:
+                visited[current_column] = True
+                current_row = matched_row[current_column]
+                delta = np.inf
+                next_column = 0
+                for column in range(1, column_count + 1):
+                    if visited[column]:
+                        continue
+                    reduced = (
+                        cost[current_row - 1, column - 1]
+                        - row_potential[current_row]
+                        - column_potential[column]
+                    )
+                    if reduced < minimum_cost[column]:
+                        minimum_cost[column] = reduced
+                        predecessor[column] = current_column
+                    if minimum_cost[column] < delta:
+                        delta = minimum_cost[column]
+                        next_column = column
+                for column in range(column_count + 1):
+                    if visited[column]:
+                        row_potential[matched_row[column]] += delta
+                        column_potential[column] -= delta
+                    else:
+                        minimum_cost[column] -= delta
+                current_column = next_column
+                if matched_row[current_column] == 0:
+                    break
+            while True:
+                previous_column = predecessor[current_column]
+                matched_row[current_column] = matched_row[previous_column]
+                current_column = previous_column
+                if current_column == 0:
+                    break
+
+        assignments = sorted(
+            (row - 1, column - 1)
+            for column, row in enumerate(matched_row[1:], start=1)
+            if row != 0
+        )
+        return [row for row, _ in assignments], [column for _, column in assignments]
+
+    def _solve_score_assignment(self, db_coords, user_points, row_weights=None):
+        row_count = len(db_coords)
+        user_count = len(user_points)
+        if row_count == 0:
+            return {}
+        if row_weights is None:
+            row_weights = [1] * row_count
+
+        # Match the 13C assignment objective: maximize in-tolerance matches,
+        # then minimize total scaled displacement. Out-of-tolerance pairs are
+        # retained when needed, matching the established 13C fallback behavior.
+        cost = np.full((row_count, user_count + row_count), 1e6, dtype=np.float64)
+        for row, db_point in enumerate(db_coords):
+            for column, user_point in enumerate(user_points):
+                distance = self._point_distance(db_point, user_point)
+                in_tolerance = (
+                    abs(db_point[0] - user_point[0]) <= self.c_tol
+                    and abs(db_point[1] - user_point[1]) <= self.h_tol
+                )
+                cost[row, column] = (0.0 if in_tolerance else 1e4) + distance
+            cost[row, user_count + row] = 1e6
+
+        rows, columns = self._linear_sum_assignment(cost)
+        return {
+            row: column if column < user_count else None
+            for row, column in zip(rows, columns)
+        }
+
     def _process_single_molecule(self, mol_id, db_points, user_points, h_type=None):
         if self.CH_merge == "N":
-            """处理单个分子，每个分子使用独立的used_user集合"""
             matches = []
-            distances = self._calculate_distances([p[2] for p in db_points], user_points)
+            assigned = self._solve_score_assignment([p[2] for p in db_points], user_points)
             used_db = set()
-            used_user = set()  # 每个分子独立使用
-
-            # _calculate_distances already returns this exact stable ordering.
-            for d in distances:
-                db_idx, user_idx, dist = d
-                if db_idx not in used_db and user_idx not in used_user:
-                    db_entry = db_points[db_idx]
-                    matches.append(
-                        (
-                            mol_id,
-                            db_entry[0],
-                            json.dumps(db_entry[2]),
-                            json.dumps(user_points[user_idx]),
-                            dist,
-                            h_type if h_type else db_entry[1],
-                        )
+            for db_idx, user_idx in assigned.items():
+                if user_idx is None:
+                    continue
+                db_entry = db_points[db_idx]
+                dist = self._point_distance(db_entry[2], user_points[user_idx])
+                matches.append(
+                    (
+                        mol_id,
+                        db_entry[0],
+                        json.dumps(db_entry[2]),
+                        json.dumps(user_points[user_idx]),
+                        round(dist, 2),
+                        h_type if h_type else db_entry[1],
                     )
-                    used_db.add(db_idx)
-                    used_user.add(user_idx)
+                )
+                used_db.add(db_idx)
 
-                    if len(used_db) == len(db_points) or len(used_user) == len(user_points):
-                        break
-
-            # 填充未匹配的数据库点
             for idx, db_entry in enumerate(db_points):
                 if idx not in used_db:
                     matches.append(
@@ -266,40 +398,24 @@ class UserPointMatcher:
                     )
             return matches
         if self.CH_merge == "Y":
-            """处理单个分子，相同坐标的数据库点匹配同一个用户点"""
-            # 按坐标分组数据库点
             coord_groups = {}
             for idx, entry in enumerate(db_points):
-                coord_key = tuple(entry[2])  # 使用坐标作为分组键
-                if coord_key not in coord_groups:
-                    coord_groups[coord_key] = []
-                coord_groups[coord_key].append((idx, entry))
+                coord_groups.setdefault(tuple(entry[2]), []).append((idx, entry))
 
-            # 计算每组坐标到用户点的距离
-            distances = []
-            for coord, group in coord_groups.items():
-                for j, user_point in enumerate(user_points):
-                    db_c, db_h = coord
-                    user_c, user_h = user_point
-                    delta_h = (db_h - user_h) * 10
-                    delta_c = db_c - user_c
-                    dist = (delta_c**2 + delta_h**2) ** 0.5
-                    distances.append((coord, j, round(dist, 2)))
-
-            # 按距离排序
-            distances = sorted(distances, key=lambda x: x[2])
-
+            group_coords = list(coord_groups)
+            assigned = self._solve_score_assignment(
+                group_coords,
+                user_points,
+                [len(coord_groups[coord]) for coord in group_coords],
+            )
             matches = []
-            used_user = set()
-
-            # 为每组坐标匹配最佳用户点
-            for d in distances:
-                coord, user_idx, dist = d
-                if user_idx in used_user or coord not in coord_groups:
+            matched_coords = set()
+            for group_idx, user_idx in assigned.items():
+                coord = group_coords[group_idx]
+                if user_idx is None:
                     continue
-
-                # 整组匹配同一个用户点
-                for idx, entry in coord_groups[coord]:
+                dist = round(self._point_distance(coord, user_points[user_idx]), 2)
+                for _, entry in coord_groups[coord]:
                     c_index, h_type_val, _ = entry
                     matches.append(
                         (
@@ -312,12 +428,11 @@ class UserPointMatcher:
                         )
                     )
 
-                used_user.add(user_idx)
-                # 移除已匹配的组
-                del coord_groups[coord]
+                matched_coords.add(coord)
 
-            # 处理未匹配的数据库点
             for coord, group in coord_groups.items():
+                if coord in matched_coords:
+                    continue
                 for idx, entry in group:
                     c_index, h_type_val, _ = entry
                     matches.append(
@@ -335,7 +450,7 @@ class UserPointMatcher:
 
     def _match_mode1(self):
         """模式1：每个分子独立匹配所有用户点"""
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn, conn:
             molecules = {}
             for row in conn.execute(
                 "SELECT mol_id, c_index, h_count, coordinates FROM carbon_h_coordinates"
@@ -359,7 +474,7 @@ class UserPointMatcher:
 
     def _match_mode2(self):
         """新增：模式2专用匹配方法（合并处理type1/3）"""
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn, conn:
             # 获取所有type1和type3的原子
             molecules = {}
             for row in conn.execute("""
@@ -391,7 +506,7 @@ class UserPointMatcher:
         return all_matches
 
     def _match_by_type(self, h_type, user_points):
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn, conn:
             molecules = {}
             for row in conn.execute(
                 """
@@ -418,7 +533,7 @@ class UserPointMatcher:
         return all_matches
 
     def process(self):
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn, conn:
             conn.execute("DELETE FROM user_matches")
             matches = []
 
@@ -473,7 +588,7 @@ class MoleculeScoreCalculator:
 
     def _create_score_table(self):
         """创建评分存储表"""
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn, conn:
             conn.execute("DROP TABLE IF EXISTS molecule_ch_scores")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS molecule_ch_scores (
@@ -487,49 +602,13 @@ class MoleculeScoreCalculator:
             conn.commit()
 
     def _calculate_point_score(self, db_point: tuple, user_point: tuple) -> float:
-        """基于原始位移值的评分计算"""
-        # 处理占位点
-        if user_point == (0, 0):
-            return 0.0
-
-        db_c, db_h = db_point
-        user_c, user_h = user_point
-
-        # 检查是否在矩形区域内（核心逻辑）
-        in_c_range = db_c - self.c_tol <= user_c <= db_c + self.c_tol
-        in_h_range = db_h - self.h_tol <= user_h <= db_h + self.h_tol
-        if in_c_range and in_h_range:
-            return 1.0
-
-        # 计算原始差异
-        delta_c = user_c - db_c
-        delta_h = user_h - db_h
-
-        # 区域判断逻辑
-        if delta_c == 0:
-            region = "top" if delta_h > 0 else "bottom"
-        else:
-            slope_ratio = abs(delta_h / delta_c)
-            main_slope = self.h_tol / self.c_tol  # 使用原始误差比值
-
-            if slope_ratio > main_slope:
-                region = "top" if delta_h > 0 else "bottom"
-            else:
-                region = "right" if delta_c > 0 else "left"
-
-        # 评分计算
-        if region in ("left", "right"):
-            denominator = abs(delta_c)
-            score = self.c_tol / denominator if denominator != 0 else 0.0
-        else:
-            denominator = abs(delta_h)
-            score = self.h_tol / denominator if denominator != 0 else 0.0
-
-        return max(0.0, min(score, 1.0))
+        return _calculate_hsqc_point_score(
+            db_point, user_point, self.c_tol, self.h_tol
+        )
 
     def process_all(self):
         """批量处理所有分子"""
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn, conn:
             conn.row_factory = sqlite3.Row
             # 获取所有匹配数据
             cursor = conn.execute("""

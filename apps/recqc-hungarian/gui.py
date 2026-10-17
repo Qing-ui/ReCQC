@@ -105,6 +105,8 @@ class BaseModeFrame(ttk.Frame):
         )
         self.reset_button.pack(side=tk.LEFT)
         self.btn_frame.pack(pady=10)
+        self.analysis_status = tk.StringVar(value="Ready")
+        ttk.Label(self, textvariable=self.analysis_status).pack(pady=(0, 8))
 
     def select_files(self):
         files = self.file_selector.select_files_via_gui()
@@ -130,6 +132,7 @@ class BaseModeFrame(ttk.Frame):
             return
 
         self._analysis_running = True
+        self.analysis_status.set("Analysis running…")
         self.master.analysis_owner = self
         self.start_button.config(state=tk.DISABLED)
         self.reset_button.config(state=tk.DISABLED)
@@ -159,18 +162,23 @@ class BaseModeFrame(ttk.Frame):
             return
 
         if status == "error":
+            self.analysis_status.set("Analysis failed")
             self._set_analysis_idle()
             messagebox.showerror("Analysis error", payload)
             return
+        self.analysis_status.set("Opening results…")
         try:
             self.show_analysis_results(payload)
         except Exception as exc:
+            self.analysis_status.set("Result display failed")
             messagebox.showerror("Result display error", str(exc))
         finally:
             self._set_analysis_idle()
 
     def _set_analysis_idle(self):
         self._analysis_running = False
+        if not self.analysis_status.get().endswith("failed"):
+            self.analysis_status.set("Ready")
         self.start_button.config(state=tk.NORMAL)
         self.reset_button.config(state=tk.NORMAL)
         if getattr(self.master, "analysis_owner", None) is self:
@@ -709,13 +717,13 @@ class CombinedModeFrame(BaseModeFrame):
         results = pipeline.execute()
         if not results:
             raise ValueError("No candidates satisfied the selected filters and input data")
-        return pipeline, results
-
-    def show_analysis_results(self, payload):
-        pipeline, results = payload
         output_dir = self.create_run_output_dir("combined_results")
         self.save_import_report(pipeline.import_report, output_dir)
         pipeline._generate_plots(output_dir=output_dir)
+        return pipeline, results, output_dir
+
+    def show_analysis_results(self, payload):
+        pipeline, results, output_dir = payload
         viewer = CombinedResultViewer(
             db_path="chem_data.db", results=results, output_dir=output_dir
         )
@@ -1086,14 +1094,15 @@ class CarbonOnlyModeFrame(BaseModeFrame):
         results = pipeline.execute()
         if not results:
             raise ValueError("No candidates satisfied the selected filters and input data")
-        return pipeline, results
-
-    def show_analysis_results(self, payload):
-        pipeline, results = payload
         output_dir = self.create_run_output_dir("molecule_plots")
         self.save_import_report(pipeline.import_report, output_dir)
-        visualizer = CarbonResultVisualizer(db_path="chem_data.db", top_results=results)
-        visualizer.generate_plots(output_dir=output_dir)
+        CarbonResultVisualizer(db_path="chem_data.db", top_results=results).generate_plots(
+            output_dir=output_dir
+        )
+        return pipeline, results, output_dir
+
+    def show_analysis_results(self, payload):
+        pipeline, results, output_dir = payload
         ResultViewer("chem_data.db", results, output_dir=output_dir).create_result_window(
             self.master
         )
@@ -1243,16 +1252,15 @@ class CHMatchModeFrame(BaseModeFrame):
         results = pipeline.execute()
         if not results:
             raise ValueError("No candidates satisfied the selected filters and input data")
-        return config, pipeline, results
-
-    def show_analysis_results(self, payload):
-        config, pipeline, results = payload
         output_dir = self.create_run_output_dir("ch_match_plots")
         self.save_import_report(pipeline.import_report, output_dir)
-        visualizer = CHMatchVisualizer(
-            db_path="chem_data.db", top_results=results, mode=config["ch_mode"]
+        CHMatchVisualizer(db_path="chem_data.db", top_results=results, mode=config["ch_mode"]).generate_plots(
+            output_dir=output_dir
         )
-        visualizer.generate_plots(output_dir=output_dir)
+        return config, pipeline, results, output_dir
+
+    def show_analysis_results(self, payload):
+        config, pipeline, results, output_dir = payload
         viewer = CHResultViewer(db_path="chem_data.db", results=results, output_dir=output_dir)
         viewer.create_result_window(self.master)
 
@@ -1281,7 +1289,7 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.analysis_owner = None
-        self.title("ReCQC - Natural product analysis based on C spectrum and HSQC")
+        self.title("ReCQC 2.5 - Natural product analysis based on C spectrum and HSQC")
         self.geometry("800x610")
         ChemTheme.configure_style()
         self.create_ui()

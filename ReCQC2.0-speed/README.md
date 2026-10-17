@@ -1,6 +1,6 @@
-# ReCQC 2.0 Speed
+# ReCQC 2.6
 
-This directory contains the maintained ReCQC 2.0 Speed release. Scientific
+This directory contains the maintained ReCQC 2.6 release. Scientific
 background is described in the associated publication.
 
 ## Run

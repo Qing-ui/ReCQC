@@ -1,6 +1,6 @@
 # ReCQC — Hungarian matching implementation
 
-This directory contains a separately versioned ReCQC matching implementation.
+This directory contains ReCQC 2.5.
 It is kept separate from ReCQC 1.0 and 2.0 so results can be traced to the exact
 software release used.
 

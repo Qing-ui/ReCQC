@@ -1,6 +1,6 @@
-# ReCQC 2.0 Speed
+# ReCQC 2.6
 
-This is the isolated local performance build of ReCQC 2.0.
+This is the isolated performance build of ReCQC 2.6.
 
 ## Run
 
@@ -34,5 +34,5 @@ sent to `2638614209@qq.com`.
 
 ## Release information
 
-This package contains the maintained ReCQC 2.0 Speed release. See the repository
+This package contains the maintained ReCQC 2.6 release. See the repository
 README and associated publication for general information.
