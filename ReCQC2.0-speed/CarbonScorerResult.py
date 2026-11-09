@@ -116,11 +116,6 @@ class CarbonOnlyScorerGUI:
             mode=self.c_mode,
             C_merge=self.C_merge,
         )
-        if self.score_mode == "global":
-            matcher.match_green_threshold = float(self.global_thresholds[0])
-            matcher.match_yellow_threshold = float(self.global_thresholds[1])
-        else:
-            matcher.match_fine_ranges = self.fine_ranges
         matcher.run()
 
         # 碳原子评分
@@ -280,8 +275,6 @@ class CarbonResultVisualizer:
         # 设置绘图样式参数
         opts.setBackgroundColour((173 / 255, 216 / 255, 230 / 255))
         opts.bondLineWidth = 2.5
-        # Older RDKit builds exposed dotsPerAngstrom on MolDrawOptions;
-        # newer supported builds do not. It is a rendering hint only.
         if hasattr(opts, "dotsPerAngstrom"):
             opts.dotsPerAngstrom = 1000
         opts.fixedBondLength = 70

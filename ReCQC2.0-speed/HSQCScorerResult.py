@@ -73,8 +73,6 @@ class CHOnlyScorerGUI:
             user_points=self.ch_data,
             mode=self.ch_mode,
             CH_merge=self.CH_merge,
-            c_tolerance=self.c_tol,
-            h_tolerance=self.h_tol,
         )
         matcher.process()
 

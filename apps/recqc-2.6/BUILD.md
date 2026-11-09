@@ -1,6 +1,6 @@
 # ReCQC 2.6
 
-This is the isolated performance build of ReCQC 2.6.
+ReCQC 2.6 provides carbon, HSQC, and joint spectrum matching.
 
 ## Run
 
@@ -13,7 +13,7 @@ After setting up the environment, run:
 
 `powershell -ExecutionPolicy Bypass -File .\build_exe.ps1`
 
-The single-file GUI executable is written to `dist\ReCQC2.0-speed.exe`.
+The single-file GUI executable is written to `dist\ReCQC2.6.exe`.
 Build output is intentionally excluded from Git; published binaries belong in
 GitHub Releases.
 

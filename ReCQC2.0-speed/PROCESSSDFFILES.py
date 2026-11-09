@@ -177,8 +177,6 @@ class SDFBatchProcessor:
                         )
                         print(f"File {sdf_path} processing failed: {str(e)}")
                     finally:
-                        # The progress total is the number of files, so update
-                        # once per file instead of once per molecule.
                         pbar.update(1)
                         pbar.set_postfix_str(os.path.basename(sdf_path))
 
@@ -223,13 +221,7 @@ class SDFBatchProcessor:
             raise ValueError(f"Molecule {name!r} has no valid FW property") from exc
 
         # 解析位移数据
-        # SDF files in the published example/data sets use the explicit
-        # ``Predicted 1H shifts`` label, while older exports used
-        # ``HydrogenShifts``.  Treat these as aliases at the import boundary
-        # so the downstream HSQC pipeline receives the same atom-index map.
-        h_shifts = self._parse_first_shift_property(
-            mol, ("HydrogenShifts", "Predicted 1H shifts")
-        )
+        h_shifts = self._parse_shift_data(mol, "HydrogenShifts")
         c_shifts = self._parse_shift_data(mol, "Predicted 13C shifts")
         carbon_indices = [atom.GetIdx() for atom in mol.GetAtoms() if atom.GetAtomicNum() == 6]
         missing_c_shifts = [idx for idx in carbon_indices if idx not in c_shifts]
@@ -308,13 +300,6 @@ class SDFBatchProcessor:
                 else:
                     print(f"Format error: {line}")
         return shift_map
-
-    def _parse_first_shift_property(self, mol, tags) -> dict:
-        """Parse the first available equivalent SDF shift property."""
-        for tag in tags:
-            if mol.HasProp(tag):
-                return self._parse_shift_data(mol, tag)
-        return {}
 
     def _get_ch_info(self, carbon_atom, h_shift_map: dict) -> dict:
         """获取连接的氢原子信息"""

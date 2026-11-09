@@ -18,7 +18,7 @@ $specPath = Join-Path $PSScriptRoot ".pyinstaller-spec"
     --clean `
     --onefile `
     --windowed `
-    --name "ReCQC2.0-speed" `
+    --name "ReCQC2.6" `
     --distpath $distPath `
     --workpath $workPath `
     --specpath $specPath `
@@ -28,7 +28,7 @@ $specPath = Join-Path $PSScriptRoot ".pyinstaller-spec"
 
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-$exePath = Join-Path $distPath "ReCQC2.0-speed.exe"
+$exePath = Join-Path $distPath "ReCQC2.6.exe"
 if (-not (Test-Path -LiteralPath $exePath)) {
     throw "PyInstaller completed without producing $exePath"
 }

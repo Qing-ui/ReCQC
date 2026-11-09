@@ -256,11 +256,6 @@ class CombinedScorerGUI:
             C_merge=self.C_merge,
             mode=self.c_mode,
         )
-        if self.carbon_score_mode == "global":
-            c_matcher.match_green_threshold = float(self.carbon_global_thresholds[0])
-            c_matcher.match_yellow_threshold = float(self.carbon_global_thresholds[1])
-        else:
-            c_matcher.match_fine_ranges = self.carbon_fine_ranges
         c_matcher.run()
 
         # 碳原子评分
@@ -286,8 +281,6 @@ class CombinedScorerGUI:
             user_points=self.ch_data,
             mode=self.ch_mode,
             CH_merge=self.CH_merge,
-            c_tolerance=self.c_tol,
-            h_tolerance=self.h_tol,
         )
         ch_matcher.process()
 
@@ -651,8 +644,6 @@ class CombinedScorerGUI:
         # 设置绘图样式参数
         opts.setBackgroundColour((173 / 255, 216 / 255, 230 / 255))
         opts.bondLineWidth = 2.5
-        # Older RDKit builds exposed dotsPerAngstrom on MolDrawOptions;
-        # newer supported builds do not. It is a rendering hint only.
         if hasattr(opts, "dotsPerAngstrom"):
             opts.dotsPerAngstrom = 1000
         opts.fixedBondLength = 70

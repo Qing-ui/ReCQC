@@ -1,5 +1,4 @@
 import os
-from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing, contextmanager
 
@@ -30,9 +29,6 @@ class GreedyMatcher:
         self._init_results_table()
         self._create_indexes()
         self.carbon_cache = {}
-        self.match_green_threshold = None
-        self.match_yellow_threshold = None
-        self.match_fine_ranges = None
 
     def _validate_inputs(self):
         """参数校验（支持两种模式）"""
@@ -149,223 +145,106 @@ class GreedyMatcher:
                     "connected_c": conn_c,
                 }
 
-    @staticmethod
-    def _remaining_values(values, used_counter):
-        """Keep duplicate shifts as independent peak instances."""
-        local_counter = Counter()
-        remaining = []
-        for value in values:
-            local_counter[value] += 1
-            if local_counter[value] > used_counter[value]:
-                remaining.append(value)
-        return remaining
-
-    @staticmethod
-    def _to_float(value):
-        try:
-            if value is None:
-                return None
-            converted = float(value)
-            return converted if np.isfinite(converted) else None
-        except (TypeError, ValueError):
-            return None
-
-    def _get_match_thresholds_for_shift(self, db_shift):
-        db_value = self._to_float(db_shift)
-        if db_value is None:
-            return None, None
-
-        if self.match_fine_ranges:
-            for item in self.match_fine_ranges:
-                try:
-                    (low, high), green, yellow = item
-                    if low <= db_value <= high:
-                        return float(green), float(yellow)
-                except (TypeError, ValueError):
-                    continue
-
-        try:
-            green = (
-                float(self.match_green_threshold)
-                if self.match_green_threshold is not None
-                else None
-            )
-            yellow = (
-                float(self.match_yellow_threshold)
-                if self.match_yellow_threshold is not None
-                else None
-            )
-            return green, yellow
-        except (TypeError, ValueError):
-            return None, None
-
-    @staticmethod
-    def _linear_sum_assignment(cost_matrix):
-        """Solve the rectangular minimum-cost assignment using NumPy."""
-        cost = np.asarray(cost_matrix, dtype=np.float64)
-        row_count, column_count = cost.shape
-        if row_count == 0:
-            return [], []
-        if row_count > column_count:
-            raise ValueError("The number of rows must not exceed the number of columns")
-
-        row_potential = np.zeros(row_count + 1, dtype=np.float64)
-        column_potential = np.zeros(column_count + 1, dtype=np.float64)
-        matched_row = np.zeros(column_count + 1, dtype=np.int32)
-        predecessor = np.zeros(column_count + 1, dtype=np.int32)
-
-        for row in range(1, row_count + 1):
-            matched_row[0] = row
-            current_column = 0
-            minimum_cost = np.full(column_count + 1, np.inf, dtype=np.float64)
-            visited = np.zeros(column_count + 1, dtype=bool)
-            while True:
-                visited[current_column] = True
-                current_row = matched_row[current_column]
-                delta = np.inf
-                next_column = 0
-                for column in range(1, column_count + 1):
-                    if visited[column]:
-                        continue
-                    reduced = (
-                        cost[current_row - 1, column - 1]
-                        - row_potential[current_row]
-                        - column_potential[column]
-                    )
-                    if reduced < minimum_cost[column]:
-                        minimum_cost[column] = reduced
-                        predecessor[column] = current_column
-                    if minimum_cost[column] < delta:
-                        delta = minimum_cost[column]
-                        next_column = column
-                for column in range(column_count + 1):
-                    if visited[column]:
-                        row_potential[matched_row[column]] += delta
-                        column_potential[column] -= delta
-                    else:
-                        minimum_cost[column] -= delta
-                current_column = next_column
-                if matched_row[current_column] == 0:
-                    break
-            while True:
-                previous_column = predecessor[current_column]
-                matched_row[current_column] = matched_row[previous_column]
-                current_column = previous_column
-                if current_column == 0:
-                    break
-
-        assignments = sorted(
-            (row - 1, column - 1) for column, row in enumerate(matched_row[1:], start=1) if row != 0
-        )
-        return [row for row, _ in assignments], [column for _, column in assignments]
-
-    def _solve_fullscore_assignment(self, row_values, column_values, row_thresholds):
-        """Solve the threshold-aware carbon assignment."""
-        row_count = len(row_values)
-        real_column_count = len(column_values)
-        if row_count == 0:
-            return {}
-        if real_column_count == 0:
-            return {row: None for row in range(row_count)}
-
-        # One dummy per row permits a type-stage atom with no positive score to
-        # remain available for the second, untyped fallback stage.
-        cost = np.full((row_count, real_column_count + row_count), 1e6, dtype=np.float64)
-        score_scale = 10000.0
-        dummy_cost = score_scale
-        red_cost = score_scale * 1000.0
-
-        for row, db_shift in enumerate(row_values):
-            green, yellow = row_thresholds[row]
-            for column, user_shift in enumerate(column_values):
-                delta = abs(db_shift - user_shift)
-                if green is not None and yellow is not None and yellow > green:
-                    if delta <= green:
-                        pair_score = 1.0
-                    elif delta < yellow:
-                        pair_score = 1.0 - (delta - green) / (yellow - green)
-                    else:
-                        pair_score = 0.0
-                    cost[row, column] = (
-                        (1.0 - pair_score) * score_scale + delta * 1e-3
-                        if pair_score > 0.0
-                        else red_cost + delta
-                    )
-                    cost[row, real_column_count + row] = dummy_cost
-                else:
-                    # Defensive fallback for direct matcher use without scorer
-                    # thresholds: retain nearest-neighbour total error.
-                    cost[row, column] = delta
-                    cost[row, real_column_count + row] = 1e6
-
-        row_indices, column_indices = self._linear_sum_assignment(cost)
-        return {
-            row: column if column < real_column_count else None
-            for row, column in zip(row_indices, column_indices)
-        }
-
     def _vectorized_match(self, user_shifts, db_candidates):
-        """Assign carbon shifts with optional symmetry handling."""
-        if not user_shifts or not db_candidates:
-            return [], db_candidates
-
-        valid_users = []
-        for original_index, shift in enumerate(user_shifts):
-            numeric_shift = self._to_float(shift)
-            if numeric_shift is not None:
-                valid_users.append((numeric_shift, original_index, shift))
-
-        valid_carbons = []
-        invalid_carbons = []
-        for carbon in db_candidates:
-            numeric_shift = self._to_float(carbon.get("c_shift"))
-            if numeric_shift is None:
-                invalid_carbons.append(carbon)
-            else:
-                valid_carbons.append((numeric_shift, carbon))
-
-        if not valid_users or not valid_carbons:
-            return [], db_candidates
-
-        valid_users.sort(key=lambda item: (item[0], item[1]))
-        column_values = [item[0] for item in valid_users]
-
+        """数据库原子优先的向量化匹配，确保每个原子都有匹配"""
         if self.C_merge == "N":
-            targets = [
-                (shift, [carbon])
-                for shift, carbon in sorted(
-                    valid_carbons, key=lambda item: (item[0], item[1]["c_index"])
-                )
-            ]
-        else:
-            grouped = {}
-            for shift, carbon in valid_carbons:
-                grouped.setdefault(round(shift, 6), []).append(carbon)
-            targets = [
-                (float(group_shift), sorted(carbons, key=lambda item: item["c_index"]))
-                for group_shift, carbons in grouped.items()
-            ]
-            targets.sort(key=lambda item: (item[0], item[1][0]["c_index"]))
+            if not user_shifts or not db_candidates:
+                return [], db_candidates
 
-        row_values = [shift for shift, _ in targets]
-        row_thresholds = [self._get_match_thresholds_for_shift(shift) for shift in row_values]
-        assignments = self._solve_fullscore_assignment(row_values, column_values, row_thresholds)
+            try:
+                # 构建差异矩阵（数据库原子为行，用户位移为列）
+                db = np.array([c["c_shift"] for c in db_candidates], dtype=np.float32)
+                user = np.array(user_shifts, dtype=np.float32)
+                diff = np.abs(db[:, np.newaxis] - user)
 
-        matches = []
-        matched_indices = set()
-        for row, column in assignments.items():
-            if column is None:
-                continue
-            original_user_shift = valid_users[column][2]
-            for carbon in targets[row][1]:
-                matches.append((original_user_shift, carbon["c_index"], carbon["c_shift"]))
-                matched_indices.add(carbon["c_index"])
+                matches = []
+                used_count = 0
 
-        unmatched = [
-            carbon for _, carbon in valid_carbons if carbon["c_index"] not in matched_indices
-        ]
-        unmatched.extend(invalid_carbons)
-        return matches, unmatched
+                # 为每个数据库原子寻找最佳可用用户位移
+                for db_idx in range(len(db_candidates)):
+                    if used_count == len(user):
+                        break
+
+                    # argmin supplies both the first minimum and its position.
+                    u_idx = int(np.argmin(diff[db_idx]))
+                    if diff[db_idx, u_idx] == np.inf:
+                        continue
+                    matches.append(
+                        (
+                            user_shifts[u_idx],
+                            db_candidates[db_idx]["c_index"],  # 数据库原子索引
+                            db_candidates[db_idx]["c_shift"],
+                        )
+                    )
+                    used_count += 1
+                    diff[db_idx + 1 :, u_idx] = np.inf
+
+                return matches, []
+
+            except Exception as e:
+                print(f"匹配错误: {str(e)}")
+                return [], db_candidates
+
+        if self.C_merge == "Y":
+            """数据库原子优先的向量化匹配，相同c_shift的原子匹配同一个最佳用户位移"""
+            if not user_shifts or not db_candidates:
+                return [], db_candidates
+
+            try:
+                # 按c_shift分组，相同c_shift的原子归为一组
+                shift_groups = {}
+                for carbon in db_candidates:
+                    c_shift = carbon["c_shift"]
+                    if c_shift not in shift_groups:
+                        shift_groups[c_shift] = []
+                    shift_groups[c_shift].append(carbon)
+
+                # 构建差异矩阵（按组处理，每组一个代表）
+                group_rep = []  # 每组代表: (c_shift, 组内原子列表)
+                for c_shift, carbons in shift_groups.items():
+                    group_rep.append((c_shift, carbons))
+
+                db_shifts = np.array([rep[0] for rep in group_rep], dtype=np.float32)
+                user = np.array(user_shifts, dtype=np.float32)
+                diff = np.abs(db_shifts[:, np.newaxis] - user)
+
+                matches = []
+                used_count = 0
+
+                # 为每组寻找最佳可用用户位移
+                for group_idx in range(len(group_rep)):
+                    if used_count == len(user):
+                        break
+
+                    u_idx = int(np.argmin(diff[group_idx]))
+                    if diff[group_idx, u_idx] == np.inf:
+                        continue
+                    group_carbons = group_rep[group_idx][1]
+
+                    # 整组原子使用同一个匹配的用户位移
+                    for carbon in group_carbons:
+                        matches.append(
+                            (
+                                user_shifts[u_idx],
+                                carbon["c_index"],  # 数据库原子索引
+                                carbon["c_shift"],
+                            )
+                        )
+
+                    used_count += 1
+                    diff[group_idx + 1 :, u_idx] = np.inf
+
+                # 找出未匹配的原子（整组未匹配的原子）
+                matched_indices = {c_idx for _, c_idx, _ in matches}
+                unmatched = [
+                    carbon for carbon in db_candidates if carbon["c_index"] not in matched_indices
+                ]
+
+                return matches, unmatched
+
+            except Exception as e:
+                print(f"匹配错误: {str(e)}")
+                return [], db_candidates
 
     def _process_molecule(self, mol_id):
         """整合两种匹配模式"""
@@ -377,85 +256,43 @@ class GreedyMatcher:
             all_matches = []
 
             if self.mode == "typed":
-                used_user_shifts = Counter()
+                # 原有类型匹配逻辑
+                used_user_shifts = set()
                 for h_type in [3, 2, 1, 0]:
                     user_shifts = self.user_data.get(h_type, [])
                     candidates = [c for c in mol_data["carbons"].values() if c["h_count"] == h_type]
 
                     matches, _ = self._vectorized_match(
-                        self._remaining_values(user_shifts, used_user_shifts), candidates
+                        [s for s in user_shifts if s not in used_user_shifts], candidates
                     )
                     for u_shift, c_idx, c_shift in matches:
                         all_matches.append((h_type, u_shift, c_idx, c_shift, True))
-                        used_user_shifts[u_shift] += 1
+                        used_user_shifts.add(u_shift)
 
                 # 阶段2：剩余原子全局匹配（使用所有未使用的用户位移）
                 matched_indices = {match[2] for match in all_matches}
                 remaining_candidates = [
                     c for c in mol_data["carbons"].values() if c["c_index"] not in matched_indices
                 ]
-                all_user_shifts = [
-                    shift for h_type in [0, 1, 2, 3] for shift in self.user_data[h_type]
+                remaining_user = [
+                    s
+                    for h_type in [0, 1, 2, 3]
+                    for s in self.user_data[h_type]
+                    if s not in used_user_shifts
                 ]
-                remaining_user = self._remaining_values(all_user_shifts, used_user_shifts)
 
                 if remaining_candidates and remaining_user:
-                    matches, unmatched = self._vectorized_match(
-                        remaining_user, remaining_candidates
-                    )
+                    matches, _ = self._vectorized_match(remaining_user, remaining_candidates)
                     all_matches.extend(
                         (None, u_shift, c_idx, c_shift, False)
                         for u_shift, c_idx, c_shift in matches
                     )
-                    all_matches.extend(
-                        (
-                            None,
-                            None,
-                            carbon["c_index"],
-                            carbon.get("c_shift"),
-                            False,
-                        )
-                        for carbon in unmatched
-                    )
-                else:
-                    all_matches.extend(
-                        (
-                            None,
-                            None,
-                            carbon["c_index"],
-                            carbon.get("c_shift"),
-                            False,
-                        )
-                        for carbon in remaining_candidates
-                    )
             elif self.mode == "untyped":
                 # 全局匹配逻辑
                 candidates = list(mol_data["carbons"].values())
-                matches, unmatched = self._vectorized_match(self.user_data, candidates)
+                matches, _ = self._vectorized_match(self.user_data, candidates)
                 for u_shift, c_idx, c_shift in matches:
                     all_matches.append((None, u_shift, c_idx, c_shift, True))
-                all_matches.extend(
-                    (
-                        None,
-                        None,
-                        carbon["c_index"],
-                        carbon.get("c_shift"),
-                        False,
-                    )
-                    for carbon in unmatched
-                )
-
-            if not all_matches:
-                all_matches.extend(
-                    (
-                        None,
-                        None,
-                        carbon["c_index"],
-                        carbon.get("c_shift"),
-                        False,
-                    )
-                    for carbon in mol_data["carbons"].values()
-                )
 
             return self._prepare_match_rows(mol_id, mol_data["name"], all_matches)
 

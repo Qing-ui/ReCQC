@@ -13,15 +13,16 @@ ReCQC 是一款基于 13C NMR 与 HSQC 数据进行天然产物混合物去重�
 | --- | --- | --- | --- |
 | ReCQC 1.0 | Released / 正式版 | [`apps/recqc-1.0`](apps/recqc-1.0) | Original 13C NMR dereplication workflow |
 | ReCQC 2.0 | Released / 正式版 | [`apps/recqc-2.0`](apps/recqc-2.0) | 13C NMR and HSQC database strategies |
-| ReCQC 2.6 | Released / 正式版 | [`ReCQC2.0-speed`](ReCQC2.0-speed) | Performance release |
+| ReCQC 2.0 Speed | Released / 正式版 | [`ReCQC2.0-speed`](ReCQC2.0-speed) | Faster execution of the ReCQC 2.0 workflow |
 | ReCQC 2.5 | Released / 正式版 | [`apps/recqc-hungarian`](apps/recqc-hungarian) | Matching release |
+| ReCQC 2.6 | Released / 正式版 | [`apps/recqc-2.6`](apps/recqc-2.6) | Score-maximizing peak assignment |
 
-All four implementations are maintained as formal ReCQC projects. ReCQC 1.0
+All implementations are maintained as formal ReCQC projects. ReCQC 1.0
 and 2.0 are the versions described in the associated publication. Alternative
 implementations are kept in separate directories so analyses can record the
 exact software version used.
 
-四个实现均作为 ReCQC 正式项目维护。ReCQC 1.0 和 2.0 对应关联论文；其他实现单独保存，
+各实现均作为 ReCQC 正式项目维护。ReCQC 1.0 和 2.0 对应关联论文；其他实现单独保存，
 以便分析结果能够明确追溯到所使用的软件版本。
 
 ## Repository layout / 目录结构
@@ -30,7 +31,9 @@ exact software version used.
 apps/
   recqc-1.0/          formal ReCQC 1.0 application
   recqc-2.0/          formal ReCQC 2.0 application
-  recqc-hungarian/    formal Hungarian matching implementation
+  recqc-hungarian/    ReCQC 2.5 Hungarian matching
+  recqc-2.6/          ReCQC 2.6 application
+ReCQC2.0-speed/       ReCQC 2.0 with faster matching
 docs/                 user documentation
 examples/data/        example SDF and spreadsheet data
 tests/                 repository-level safety checks
@@ -77,10 +80,17 @@ ReCQC Hungarian：
 python apps/recqc-hungarian/gui.py
 ```
 
+ReCQC 2.6：
+
+```powershell
+python apps/recqc-2.6/gui.py
+```
+
 ReCQC 2.0 Speed：
 
 ```powershell
-python ReCQC2.0-speed/gui.py
+Set-Location ReCQC2.0-speed
+python gui.py
 ```
 
 ## Release information / 发布信息

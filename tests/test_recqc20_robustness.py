@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 VERSIONS = {
     "recqc20": ROOT / "apps" / "recqc-2.0",
     "hungarian": ROOT / "apps" / "recqc-hungarian",
-    "speed": ROOT / "ReCQC2.0-speed",
+    "2.6": ROOT / "apps" / "recqc-2.6",
 }
 RECQC1 = ROOT / "apps" / "recqc-1.0"
 
@@ -99,7 +99,7 @@ class SymmetryFilterTests(unittest.TestCase):
 
 class SdfIsolationTests(unittest.TestCase):
     def test_published_hydrogen_shift_property_generates_hsqc_coordinates(self):
-        for version in ("hungarian", "speed"):
+        for version in ("hungarian", "2.6"):
             with self.subTest(version=version), tempfile.TemporaryDirectory(dir=ROOT) as temp_dir:
                 temp_path = Path(temp_dir)
                 sdf_path = temp_path / "published-fields.sdf"
@@ -111,8 +111,7 @@ class SdfIsolationTests(unittest.TestCase):
                     mol.SetProp("Predicted 13C shifts", "1C[1] 10.0\n2C[2] 20.0")
                     mol.SetProp(
                         "Predicted 1H shifts",
-                        "1a[3] 1.0\n1b[4] 1.1\n1c[5] 1.2\n"
-                        "2a[6] 1.3\n2b[7] 1.4\n2c[8] 1.5",
+                        "1a[3] 1.0\n1b[4] 1.1\n1c[5] 1.2\n2a[6] 1.3\n2b[7] 1.4\n2c[8] 1.5",
                     )
                     writer.write(mol)
                 finally:
@@ -123,12 +122,12 @@ class SdfIsolationTests(unittest.TestCase):
                 report = processor.process_files_atomically([str(sdf_path)], str(db_path))
                 self.assertEqual(1, report["accepted"])
 
-                extractor_class = load_module(version, "HSQCScoreProcess.py").CarbonCoordinateExtractor
+                extractor_class = load_module(
+                    version, "HSQCScoreProcess.py"
+                ).CarbonCoordinateExtractor
                 extractor_class(str(db_path)).process_all()
                 with closing(sqlite3.connect(db_path)) as conn:
-                    count = conn.execute(
-                        "SELECT COUNT(*) FROM carbon_h_coordinates"
-                    ).fetchone()[0]
+                    count = conn.execute("SELECT COUNT(*) FROM carbon_h_coordinates").fetchone()[0]
                 self.assertEqual(2, count)
                 del extractor_class, processor
                 gc.collect()
@@ -374,10 +373,10 @@ class Recqc1SkeletonScoringTests(unittest.TestCase):
         self.assertAlmostEqual(0.7, core_score + environment_score / environment_rate)
 
 
-class SpeedMatchingTests(unittest.TestCase):
+class Recqc26MatchingTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.module = load_module("speed", "CarbonScoreProcess.py")
+        cls.module = load_module("2.6", "CarbonScoreProcess.py")
 
     def _matcher(self, merge="N", green=1.0, yellow=10.0):
         matcher = self.module.GreedyMatcher.__new__(self.module.GreedyMatcher)
@@ -395,7 +394,7 @@ class SpeedMatchingTests(unittest.TestCase):
             return 1.0 - (delta - green) / (yellow - green)
         return 0.0
 
-    def test_speed_maximizes_green_plus_yellow_total_score(self):
+    def test_recqc26_maximizes_green_plus_yellow_total_score(self):
         matcher = self._matcher()
         candidates = [
             {"c_index": 0, "c_shift": 0.0},
@@ -413,7 +412,7 @@ class SpeedMatchingTests(unittest.TestCase):
         self.assertEqual({0: 1.5, 1: 2.5}, assigned)
         self.assertGreater(selected_score, alternative_score)
 
-    def test_speed_preserves_duplicate_peak_instances(self):
+    def test_recqc26_preserves_duplicate_peak_instances(self):
         matcher = self._matcher(green=0.5, yellow=2.0)
         candidates = [
             {"c_index": 0, "c_shift": 10.0},
@@ -425,7 +424,7 @@ class SpeedMatchingTests(unittest.TestCase):
         self.assertEqual([], unmatched)
 
     def test_hsqc_assignment_matches_each_versions_carbon_objective(self):
-        for version in ("hungarian", "speed"):
+        for version in ("hungarian", "2.6"):
             with self.subTest(version=version):
                 module = load_module(version, "HSQCScoreProcess.py")
                 matcher = module.UserPointMatcher.__new__(module.UserPointMatcher)
@@ -437,9 +436,7 @@ class SpeedMatchingTests(unittest.TestCase):
 
                 matches = matcher._process_single_molecule(1, db_points, user_points)
                 assigned = {
-                    row[1]: tuple(json.loads(row[3]))
-                    for row in matches
-                    if row[3] != "[0, 0]"
+                    row[1]: tuple(json.loads(row[3])) for row in matches if row[3] != "[0, 0]"
                 }
                 in_tolerance = sum(
                     abs(entry[2][0] - assigned[entry[0]][0]) <= 1.0
@@ -450,8 +447,8 @@ class SpeedMatchingTests(unittest.TestCase):
 
                 self.assertEqual(2, in_tolerance)
 
-    def test_speed_hsqc_merge_assigns_coordinate_groups_and_keeps_placeholders(self):
-        module = load_module("speed", "HSQCScoreProcess.py")
+    def test_recqc26_hsqc_merge_assigns_coordinate_groups_and_keeps_placeholders(self):
+        module = load_module("2.6", "HSQCScoreProcess.py")
         matcher = module.UserPointMatcher.__new__(module.UserPointMatcher)
         matcher.CH_merge = "Y"
         matcher.c_tol = 1.0
@@ -468,9 +465,9 @@ class SpeedMatchingTests(unittest.TestCase):
         self.assertEqual(1, sum(row[3] == "[0, 0]" for row in matches))
         self.assertEqual({0, 1}, {row[1] for row in matches if row[3] != "[0, 0]"})
 
-    def test_speed_keeps_unmatched_carbons_as_zero_score_placeholders(self):
+    def test_recqc26_keeps_unmatched_carbons_as_zero_score_placeholders(self):
         with tempfile.TemporaryDirectory(dir=ROOT) as temp_dir:
-            db_path = Path(temp_dir) / "speed-placeholders.db"
+            db_path = Path(temp_dir) / "recqc26-placeholders.db"
             with closing(sqlite3.connect(db_path)) as conn:
                 conn.execute(
                     "CREATE TABLE molecules "
@@ -520,13 +517,13 @@ class SpeedMatchingTests(unittest.TestCase):
 
             self.assertEqual([(0, 10.0, 1), (1, None, 0)], rows)
 
-    def test_speed_gui_repairs_missing_windowed_console_streams(self):
-        gui_path = VERSIONS["speed"] / "gui.py"
-        module_name = "test_speed_gui_console_streams"
+    def test_recqc26_gui_repairs_missing_windowed_console_streams(self):
+        gui_path = VERSIONS["2.6"] / "gui.py"
+        module_name = "test_recqc26_gui_console_streams"
         spec = importlib.util.spec_from_file_location(module_name, gui_path)
         module = importlib.util.module_from_spec(spec)
         original_stdout, original_stderr = sys.stdout, sys.stderr
-        sys.path.insert(0, str(VERSIONS["speed"]))
+        sys.path.insert(0, str(VERSIONS["2.6"]))
         try:
             sys.stdout = None
             sys.stderr = None
