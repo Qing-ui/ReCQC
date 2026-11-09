@@ -1,10 +1,13 @@
 import io
 import sqlite3
+from contextlib import closing
+from multiprocessing import parent_process
 from typing import List, Tuple, Union
 
 import matplotlib.pyplot as plt
 from HSQCScoreProcess import *
 from PIL import Image
+from plot_workers import render_molecules
 from PROCESSSDFFILES import SDFBatchProcessor
 from rdkit import Chem
 from rdkit.Chem import AllChem, Draw
@@ -86,7 +89,7 @@ class CHOnlyScorerGUI:
 
     def _get_results(self, top_n: int = 20) -> List[Tuple]:
         """获取评分结果"""
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn, conn:
             return conn.execute(
                 """
                 SELECT m.mol_id, m.name, m.source_file,
@@ -130,7 +133,7 @@ class CHMatchVisualizer:
 
     def _plot_user_matches_for_molecule(self, output_dir: str, mol_id: int, mol_name: str):
         """为单个分子生成用户匹配坐标图"""
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn, conn:
             points = []
             cursor = conn.execute(
                 """
@@ -160,11 +163,15 @@ class CHMatchVisualizer:
     def generate_plots(self, output_dir: str = "ch_match_plots"):
         """生成所有可视化图表"""
         os.makedirs(output_dir, exist_ok=True)
+        render_molecules(self._plot_batch, self.top_results, output_dir)
 
-        with sqlite3.connect(self.db_path) as conn:
+    def _plot_batch(self, results, output_dir):
+        with closing(sqlite3.connect(self.db_path)) as conn, conn:
             conn.row_factory = sqlite3.Row
 
-            for mol_id, mol_name, *_ in tqdm(self.top_results, desc="Generate a chart"):
+            for mol_id, mol_name, *_ in tqdm(
+                results, desc="Generate a chart", disable=parent_process() is not None
+            ):
                 # 生成库匹配图
                 mol_block = conn.execute(
                     "SELECT mol_block FROM molecules WHERE mol_id = ?", (mol_id,)
@@ -221,7 +228,7 @@ class CHMatchVisualizer:
 
     def _plot_library_matches(self, output_dir: str):
         """生成库分子匹配坐标图"""
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn, conn:
             conn.row_factory = sqlite3.Row
 
             for mol_id, mol_name, *_ in tqdm(self.top_results, desc="Library molecule plotting"):
@@ -338,7 +345,7 @@ class CHMatchVisualizer:
 
     def _plot_user_matches(self, output_dir: str):
         """修正用户坐标解析方式"""
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn, conn:
             points = []
             cursor = conn.execute("""
                 SELECT user_point, h_type
@@ -466,7 +473,7 @@ class CHResultViewer:
         detail_win.configure(bg="#2C3E50")
 
         # 获取分子名称
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn, conn:
             mol_name = conn.execute(
                 "SELECT name FROM molecules WHERE mol_id=?", (mol_id,)
             ).fetchone()[0]
@@ -577,7 +584,7 @@ class CHResultViewer:
 
     def load_match_data(self, mol_id):
         """加载匹配点数据"""
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn, conn:
             conn.row_factory = sqlite3.Row
             matches = conn.execute(
                 """

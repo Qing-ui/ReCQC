@@ -8,7 +8,7 @@ class CarbonCoordinateExtractor:
 
     def _create_table(self):
         """创建坐标存储表"""
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn, conn:
             conn.execute("DROP TABLE IF EXISTS carbon_h_coordinates")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS carbon_h_coordinates (
@@ -78,7 +78,7 @@ class CarbonCoordinateExtractor:
 
     def process_all(self):
         """批量处理所有分子（修正进度显示）"""
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn, conn:
             conn.row_factory = sqlite3.Row
 
             # 获取总碳原子数（h_count>0且c_shift存在）
@@ -151,6 +151,7 @@ class CarbonCoordinateExtractor:
 
 import json
 import sqlite3
+from contextlib import closing
 
 import numpy as np
 from tqdm import tqdm
@@ -181,7 +182,7 @@ class UserPointMatcher:
             raise ValueError("Invalid Mode Selection (1-3)")
 
     def _create_result_table(self):
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn, conn:
             conn.execute("DROP TABLE IF EXISTS user_matches")
             conn.execute("""
                 CREATE TABLE user_matches (
@@ -361,7 +362,7 @@ class UserPointMatcher:
 
     def _match_mode1(self):
         """模式1：每个分子独立匹配所有用户点"""
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn, conn:
             molecules = {}
             for row in conn.execute(
                 "SELECT mol_id, c_index, h_count, coordinates FROM carbon_h_coordinates"
@@ -385,7 +386,7 @@ class UserPointMatcher:
 
     def _match_mode2(self):
         """新增：模式2专用匹配方法（合并处理type1/3）"""
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn, conn:
             # 获取所有type1和type3的原子
             molecules = {}
             for row in conn.execute("""
@@ -417,7 +418,7 @@ class UserPointMatcher:
         return all_matches
 
     def _match_by_type(self, h_type, user_points):
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn, conn:
             molecules = {}
             for row in conn.execute(
                 """
@@ -444,7 +445,7 @@ class UserPointMatcher:
         return all_matches
 
     def process(self):
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn, conn:
             conn.execute("DELETE FROM user_matches")
             matches = []
 
@@ -499,7 +500,7 @@ class MoleculeScoreCalculator:
 
     def _create_score_table(self):
         """创建评分存储表"""
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn, conn:
             conn.execute("DROP TABLE IF EXISTS molecule_ch_scores")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS molecule_ch_scores (
@@ -555,7 +556,7 @@ class MoleculeScoreCalculator:
 
     def process_all(self):
         """批量处理所有分子"""
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn, conn:
             conn.row_factory = sqlite3.Row
             # 获取所有匹配数据
             cursor = conn.execute("""
@@ -568,28 +569,23 @@ class MoleculeScoreCalculator:
                 JOIN molecules m ON u.mol_id = m.mol_id
             """)
 
-            # 按分子分组计算
-            from collections import defaultdict
-
-            mol_data = defaultdict(list)
+            # Accumulate each molecule in cursor order without keeping every
+            # pair in memory for a second pass.
+            totals = {}
             for row in cursor:
                 db_point = (row["db_c"], row["db_h"])
                 user_point = (row["user_c"], row["user_h"])
-                mol_data[row["mol_id"]].append((db_point, user_point))
-
-            # 计算评分
-            scores = []
-            for mol_id, points in mol_data.items():
-                total_score = 0.0
-                valid_points = 0
-
-                for db_p, user_p in points:
-                    score = self._calculate_point_score(db_p, user_p)
-                    total_score += score
-                    valid_points += 1 if user_p != (0, 0) else 0
-
-                avg_score = total_score / len(points) if points else 0.0
-                scores.append((mol_id, avg_score, valid_points, len(points)))
+                mol_id = row["mol_id"]
+                total_score, matched, count = totals.get(mol_id, (0.0, 0, 0))
+                totals[mol_id] = (
+                    total_score + self._calculate_point_score(db_point, user_point),
+                    matched + (user_point != (0, 0)),
+                    count + 1,
+                )
+            scores = [
+                (mol_id, score / count, matched, count)
+                for mol_id, (score, matched, count) in totals.items()
+            ]
 
             # 批量存储
             conn.executemany(

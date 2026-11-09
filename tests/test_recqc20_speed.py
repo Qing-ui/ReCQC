@@ -1,7 +1,14 @@
 import importlib.util
+import os
+import sqlite3
+import tempfile
 import unittest
+from contextlib import closing
 from itertools import product
 from pathlib import Path
+from unittest.mock import patch
+
+from rdkit import Chem
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,18 +35,79 @@ class Recqc20SpeedTests(unittest.TestCase):
             for directory in (ORIGINAL, SPEED)
         ]
 
-    def test_shared_desktop_and_scoring_files_are_identical(self):
+    def test_shared_input_assets_are_identical(self):
         for name in (
-            "gui.py",
-            "PROCESSSDFFILES.py",
             "SDFFileSelector.py",
-            "CarbonScorerResult.py",
-            "HSQCScorerResult.py",
-            "CombineScorerResult.py",
             "img.png",
         ):
             with self.subTest(name=name):
                 self.assertEqual((ORIGINAL / name).read_bytes(), (SPEED / name).read_bytes())
+
+    def test_prepared_library_preserves_database_and_invalidates_on_same_size_edit(self):
+        original = load(ORIGINAL, "PROCESSSDFFILES.py").SDFBatchProcessor
+        speed = load(SPEED, "PROCESSSDFFILES.py").SDFBatchProcessor
+        with tempfile.TemporaryDirectory(dir=ROOT) as temp_dir:
+            folder = Path(temp_dir)
+            source = folder / "library.sdf"
+            live = folder / "live.sqlite"
+            baseline = folder / "original.sqlite"
+
+            mol = Chem.AddHs(Chem.MolFromSmiles("CC"))
+            mol.SetProp("ID", "first")
+            mol.SetProp("FW", "30.07")
+            mol.SetProp("Predicted 13C shifts", "1C[1] 10.0\n2C[2] 20.0")
+            mol.SetProp("HydrogenShifts", "1a[3] 1.0")
+            with Chem.SDWriter(str(source)) as writer:
+                writer.write(mol)
+                mol.ClearProp("FW")
+                writer.write(mol)
+
+            def dump(path):
+                with closing(sqlite3.connect(path)) as conn:
+                    return list(conn.iterdump())
+
+            paths = [str(source)]
+            expected_report = original.process_files_atomically(paths, str(baseline))
+            self.assertEqual((expected_report["accepted"], expected_report["rejected"]), (1, 1))
+            report = speed.process_files_atomically(paths, str(live))
+            self.assertEqual(report, expected_report)
+            self.assertEqual(dump(live), dump(baseline))
+            with closing(sqlite3.connect(live)) as conn:
+                conn.execute("CREATE TABLE prior_result (score REAL)")
+                conn.commit()
+            report["errors"].clear()
+            with patch.object(speed, "process_files", side_effect=AssertionError("expected reuse")):
+                self.assertEqual(speed.process_files_atomically(paths, str(live)), expected_report)
+            self.assertEqual(dump(live), dump(baseline))
+
+            old_stat = source.stat()
+            payload = source.read_bytes()
+            updated = payload.replace(b"10.0", b"15.0")
+            self.assertNotEqual(payload, updated)
+            source.write_bytes(updated)
+            os.utime(source, ns=(old_stat.st_atime_ns, old_stat.st_mtime_ns))
+            expected_report = original.process_files_atomically(paths, str(baseline))
+            self.assertEqual(speed.process_files_atomically(paths, str(live)), expected_report)
+            self.assertEqual(dump(live), dump(baseline))
+
+            speed._prepared[1].write_bytes(b"invalid cache")
+            self.assertEqual(speed.process_files_atomically(paths, str(live)), expected_report)
+            next_source = folder / "next-library.sdf"
+            next_source.write_bytes(updated.replace(b"first", b"second"))
+            next_paths = [str(next_source)]
+            new_report = original.process_files_atomically(next_paths, str(baseline))
+            self.assertEqual(speed.process_files_atomically(next_paths, str(live)), new_report)
+            expected_db = dump(baseline)
+            self.assertEqual(dump(live), expected_db)
+            with closing(sqlite3.connect(live)) as conn:
+                self.assertEqual(
+                    conn.execute("SELECT name,source_file FROM molecules").fetchall(),
+                    [("second", str(next_source))],
+                )
+            source.write_bytes(b"")
+            with self.assertRaisesRegex(ValueError, "No valid molecules"):
+                speed.process_files_atomically(paths, str(live))
+            self.assertEqual(dump(live), expected_db)
 
     def test_carbon_pairs_keep_original_order_and_type_fallback(self):
         carbons = {

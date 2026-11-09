@@ -673,9 +673,9 @@ class RobustMoleculeScorer:
                         logging.error(f"Processing Molecule {mol_id} Failed: {str(e)}")
                         raise
                     finally:
-                        # 无论成功失败都更新进度
+                        # Report the current molecule on tqdm's normal refresh interval.
+                        pbar.set_postfix_str(f"Current molecule: {mol_id}", refresh=False)
                         pbar.update(1)
-                        pbar.set_postfix_str(f"Current molecule: {mol_id}")
 
         print(f"\nGrading done! Processed {total_mols} molecules")
 

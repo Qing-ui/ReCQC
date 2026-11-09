@@ -24,7 +24,7 @@ class CombinedScorer:
 
     def _create_combined_table(self):
         """创建联合评分结果表"""
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn, conn:
             conn.execute("DROP TABLE IF EXISTS combined_scores")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS combined_scores (
@@ -41,7 +41,7 @@ class CombinedScorer:
 
     def _get_combined_scores(self) -> List[tuple]:
         """获取并计算联合评分数据"""
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn, conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.execute("""
                 SELECT
@@ -74,7 +74,7 @@ class CombinedScorer:
         """执行联合评分流程"""
         scores = self._get_combined_scores()
 
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn, conn:
             conn.executemany(
                 """
                 INSERT INTO combined_scores
@@ -90,6 +90,7 @@ class CombinedScorer:
 import io
 import os
 import sqlite3
+from contextlib import closing
 import tkinter as tk
 from pathlib import Path
 from tkinter import ttk
@@ -98,6 +99,7 @@ from typing import Dict, List, Tuple
 import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse
 from PIL import Image, ImageTk
+from plot_workers import render_molecules
 from rdkit import Chem
 from rdkit.Chem import AllChem, Draw
 
@@ -298,7 +300,7 @@ class CombinedScorerGUI:
         ).process()
 
         # 检索结果
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn, conn:
             return conn.execute(
                 """
                 SELECT m.mol_id, m.name, m.source_file,
@@ -368,14 +370,17 @@ class CombinedScorerGUI:
             )
         return (0.8, 0.8, 0.8)
 
-    def _generate_plots(self, output_dir: str = "combined_results"):
+    def _generate_plots(self, output_dir: str = "combined_results", *, results=None):
         """生成联合评分可视化图表（包含C评分和CH匹配两种图表）"""
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
 
-        results = self._get_combined_results()
+        if results is None:
+            results = self._get_combined_results()
+        render_molecules(self._plot_batch, results, output_dir)
 
-        with sqlite3.connect(self.db_path) as conn:
+    def _plot_batch(self, results, output_dir):
+        with closing(sqlite3.connect(self.db_path)) as conn, conn:
             for row in results:
                 mol_id, name = row[0], row[1]
                 mol = self._get_molecule(conn, mol_id)
@@ -411,29 +416,36 @@ class CombinedScorerGUI:
                 }
             )
 
-        # 生成三种视角的结构图
+        # The three views use the same layout and highlights.
+        layout = Chem.Mol(mol)
+        AllChem.Compute2DCoords(layout)
+        highlight_atoms = [c["index"] for c in carbons]
+        highlight_colors = [self._color_to_rgb(c["color"]) for c in carbons]
         self._draw_labeled_molecule(
-            mol=mol,
-            highlight_atoms=[c["index"] for c in carbons],
-            highlight_colors=[self._color_to_rgb(c["color"]) for c in carbons],
+            mol=layout,
+            highlight_atoms=highlight_atoms,
+            highlight_colors=highlight_colors,
             labels={c["index"]: str(c["index"]) for c in carbons},
             filename=os.path.join(output_dir, f"mol_{mol_id}_c_indices.png"),
+            coordinates_ready=True,
         )
         self._draw_labeled_molecule(
-            mol=mol,
-            highlight_atoms=[c["index"] for c in carbons],
-            highlight_colors=[self._color_to_rgb(c["color"]) for c in carbons],
+            mol=layout,
+            highlight_atoms=highlight_atoms,
+            highlight_colors=highlight_colors,
             labels={
                 c["index"]: f"{c['db_shift']:.1f}" for c in carbons if c.get("db_shift") is not None
             },
             filename=os.path.join(output_dir, f"mol_{mol_id}_c_db_shifts.png"),
+            coordinates_ready=True,
         )
         self._draw_labeled_molecule(
-            mol=mol,
-            highlight_atoms=[c["index"] for c in carbons],
-            highlight_colors=[self._color_to_rgb(c["color"]) for c in carbons],
+            mol=layout,
+            highlight_atoms=highlight_atoms,
+            highlight_colors=highlight_colors,
             labels={c["index"]: f"{c['user_shift']:.1f}" for c in carbons},
             filename=os.path.join(output_dir, f"mol_{mol_id}_c_user_shifts.png"),
+            coordinates_ready=True,
         )
 
     def _generate_ch_match_plots(self, conn, mol_id, name, output_dir):
@@ -627,13 +639,16 @@ class CombinedScorerGUI:
         highlight_colors: List[tuple],
         labels: Dict[int, str],
         filename: str,
+        *,
+        coordinates_ready: bool = False,
     ):
         """优化后的分子结构绘制方法（使用正确坐标类型）"""
         from rdkit import Geometry  # 确保Geometry导入
 
         # 复制分子并设置原子标签
         mol = Chem.Mol(mol)
-        AllChem.Compute2DCoords(mol)
+        if not coordinates_ready:
+            AllChem.Compute2DCoords(mol)
         for idx, label in labels.items():
             mol.GetAtomWithIdx(idx).SetProp("atomNote", label)
 
@@ -790,7 +805,7 @@ class CombinedResultViewer:
         header_frame = tk.Frame(detail_win, bg="#2C3E50")
         header_frame.pack(fill=tk.X, padx=10, pady=10)
 
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn, conn:
             score_data = conn.execute(
                 """
                 SELECT combined_score, c_score, ch_score
@@ -894,7 +909,7 @@ class CombinedResultViewer:
 
     def load_carbon_data(self, mol_id):
         """加载碳原子数据"""
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn, conn:
             carbons = conn.execute(
                 """
                 SELECT c_index, db_shift, user_shift, score

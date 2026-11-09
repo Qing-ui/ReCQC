@@ -715,7 +715,7 @@ class CombinedModeFrame(BaseModeFrame):
         pipeline, results = payload
         output_dir = self.create_run_output_dir("combined_results")
         self.save_import_report(pipeline.import_report, output_dir)
-        pipeline._generate_plots(output_dir=output_dir)
+        pipeline._generate_plots(output_dir=output_dir, results=results)
         viewer = CombinedResultViewer(
             db_path="chem_data.db", results=results, output_dir=output_dir
         )

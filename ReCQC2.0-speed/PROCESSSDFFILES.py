@@ -1,3 +1,4 @@
+import atexit
 import os
 import re
 import tkinter as tk
@@ -76,8 +77,13 @@ class SDFFileSelector:
 
 
 import json
+import shutil
 import sqlite3
+import tempfile
 from contextlib import closing
+from copy import deepcopy
+from hashlib import sha256
+from threading import Lock
 from typing import List
 
 from rdkit import Chem, Geometry
@@ -92,6 +98,42 @@ class SDFBatchProcessor:
     - 错误隔离处理
     """
 
+    _prepared_lock = Lock()
+    _prepared_dir = None
+    _prepared = None
+    _shift_line = re.compile(r"(\d+)([a-zA-Z]+)?\[(\d+)\]\s+([-+]?\d*\.?\d+)")
+
+    @staticmethod
+    def _digest(path):
+        digest = sha256()
+        with path.open("rb") as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    @classmethod
+    def _source_key(cls, file_paths):
+        # The spelling is written to source_file, and selection order determines
+        # atom and molecule row order. Both are part of the key.
+        def stamp(path):
+            stat = path.stat()
+            return (stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+
+        key = []
+        try:
+            for name in file_paths:
+                path = Path(name).resolve(strict=True)
+                if not path.is_file():
+                    return None
+                before = stamp(path)
+                digest = cls._digest(path)
+                if before != stamp(path):
+                    return None
+                key.append((os.fspath(name), str(path), digest))
+        except (OSError, RuntimeError):
+            return None
+        return tuple(key)
+
     def __init__(self, output_db: str = "chem_data.db"):
         self.output_db = output_db
         self._init_database()
@@ -101,16 +143,46 @@ class SDFBatchProcessor:
         """Import into a staging database and replace the live DB only on success."""
         destination = Path(output_db).resolve()
         staging = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.importing")
-        try:
-            processor = cls(str(staging))
-            report = processor.process_files(file_paths)
-            if report["accepted"] == 0:
-                raise ValueError("No valid molecules were imported from the selected SDF files")
-            os.replace(staging, destination)
-            return report
-        finally:
-            if staging.exists():
-                staging.unlink()
+        with cls._prepared_lock:
+            try:
+                key = cls._source_key(file_paths)
+                if cls._prepared and key == cls._prepared[0]:
+                    _, cached, checksum, report = cls._prepared
+                    try:
+                        shutil.copyfile(cached, staging)
+                        verified = cls._digest(staging) == checksum
+                    except OSError:
+                        verified = False
+                    if verified:
+                        os.replace(staging, destination)
+                        print(
+                            f"Reused SDF library. Accepted: {report['accepted']}, rejected: {report['rejected']}"
+                        )
+                        return deepcopy(report)
+                    staging.unlink(missing_ok=True)
+                    cls._prepared = None
+
+                processor = cls(str(staging))
+                report = processor.process_files(file_paths)
+                if report["accepted"] == 0:
+                    raise ValueError("No valid molecules were imported from the selected SDF files")
+                # A partial file read is retried normally. Deterministic
+                # rejected records are retained in the cached import report.
+                complete = all(error["record"] is not None for error in report["errors"])
+                if key is not None and complete and key == cls._source_key(file_paths):
+                    try:
+                        if cls._prepared_dir is None:
+                            cls._prepared_dir = tempfile.TemporaryDirectory(prefix="recqc-library-")
+                            atexit.register(cls._prepared_dir.cleanup)
+                        cached = Path(cls._prepared_dir.name) / "library.sqlite"
+                        shutil.copyfile(staging, cached)
+                        cls._prepared = (key, cached, cls._digest(cached), deepcopy(report))
+                    except OSError:
+                        cls._prepared = None
+                os.replace(staging, destination)
+                return report
+            finally:
+                staging.unlink(missing_ok=True)
 
     def _init_database(self):
         """初始化数据库结构"""
@@ -148,6 +220,9 @@ class SDFBatchProcessor:
         """处理文件列表"""
         with closing(sqlite3.connect(self.output_db)) as conn:
             conn.execute("PRAGMA synchronous = NORMAL")
+            # Keep molecule savepoints inside a transaction so releasing a
+            # savepoint does not commit and sync the database for each record.
+            conn.execute("BEGIN")
             report = {"total": 0, "accepted": 0, "rejected": 0, "errors": []}
 
             with tqdm(total=len(file_paths), desc="Processing progress") as pbar:
@@ -211,7 +286,8 @@ class SDFBatchProcessor:
             mol = Chem.AddHs(mol)
             pass
 
-        carbon_count = sum(1 for atom in mol.GetAtoms() if atom.GetAtomicNum() == 6)
+        carbon_atoms = [atom for atom in mol.GetAtoms() if atom.GetAtomicNum() == 6]
+        carbon_count = len(carbon_atoms)
 
         # 获取分子量
         try:
@@ -223,7 +299,7 @@ class SDFBatchProcessor:
         # 解析位移数据
         h_shifts = self._parse_shift_data(mol, "HydrogenShifts")
         c_shifts = self._parse_shift_data(mol, "Predicted 13C shifts")
-        carbon_indices = [atom.GetIdx() for atom in mol.GetAtoms() if atom.GetAtomicNum() == 6]
+        carbon_indices = [atom.GetIdx() for atom in carbon_atoms]
         missing_c_shifts = [idx for idx in carbon_indices if idx not in c_shifts]
         if missing_c_shifts:
             raise ValueError(
@@ -253,20 +329,19 @@ class SDFBatchProcessor:
 
         # 处理碳原子
         carbons = []
-        for atom in mol.GetAtoms():
-            if atom.GetSymbol() == "C":
-                h_info = self._get_ch_info(atom, h_shifts)
-                carbons.append(
-                    (
-                        mol_id,
-                        atom.GetIdx(),
-                        h_info["count"],
-                        json.dumps(h_info["indices"]),
-                        json.dumps(h_info["shifts"]),
-                        c_shifts.get(atom.GetIdx()),
-                        json.dumps(h_info["connected_c_idx"]),
-                    )
+        for atom, atom_index in zip(carbon_atoms, carbon_indices):
+            h_info = self._get_ch_info(atom, h_shifts)
+            carbons.append(
+                (
+                    mol_id,
+                    atom_index,
+                    h_info["count"],
+                    json.dumps(h_info["indices"]),
+                    json.dumps(h_info["shifts"]),
+                    c_shifts.get(atom_index),
+                    json.dumps(h_info["connected_c_idx"]),
                 )
+            )
 
         # 批量插入碳原子数据
         cursor.executemany(
@@ -288,7 +363,7 @@ class SDFBatchProcessor:
                     continue
 
                 # 匹配格式：任意数字[实际索引+1] 位移值
-                match = re.match(r"(\d+)([a-zA-Z]+)?\[(\d+)\]\s+([-+]?\d*\.?\d+)", line)
+                match = self._shift_line.match(line)
                 if match:
                     try:
                         atom_idx = int(match.group(3)) - 1  # 转换为实际索引
@@ -307,11 +382,12 @@ class SDFBatchProcessor:
         h_shifts = []
         c_indices = []
         for neighbor in carbon_atom.GetNeighbors():
-            if neighbor.GetSymbol() == "H":
+            atomic_number = neighbor.GetAtomicNum()
+            if atomic_number == 1:
                 h_idx = neighbor.GetIdx()
                 h_indices.append(h_idx)
                 h_shifts.append(h_shift_map.get(h_idx))
-            if neighbor.GetSymbol() == "C":
+            elif atomic_number == 6:
                 idx = neighbor.GetIdx()
                 c_indices.append(idx)
         return {

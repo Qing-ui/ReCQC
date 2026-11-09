@@ -1,11 +1,13 @@
 import io
 import sqlite3
+from contextlib import closing
 from typing import Dict, List, Tuple
 
 import matplotlib.pyplot as plt
 from CarbonScoreProcess import *
 from PIL import Image
 from PIL.ImagePath import Path
+from plot_workers import render_molecules
 from PROCESSSDFFILES import SDFBatchProcessor
 from rdkit import Chem
 from rdkit.Chem import AllChem, Draw
@@ -138,7 +140,7 @@ class CarbonOnlyScorerGUI:
 
     def _get_results(self, top_n: int = 20) -> List[Tuple]:
         """获取评分结果（修改后逻辑：评分相同时C数多的靠前）"""
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn, conn:
             return conn.execute(
                 """
                 SELECT m.mol_id, m.name, m.source_file,
@@ -169,20 +171,20 @@ class CarbonResultVisualizer:
         import os
 
         os.makedirs(output_dir, exist_ok=True)
+        render_molecules(self._plot_batch, self.top_results, output_dir)
 
-        for result in self.top_results:
-            mol_id = result[0]
-            mol_name = result[1]
-
-            with sqlite3.connect(self.db_path) as conn:
+    def _plot_batch(self, results, output_dir):
+        with closing(sqlite3.connect(self.db_path)) as conn, conn:
+            for result in results:
+                mol_id, mol_name = result[:2]
                 carbons = self._get_carbon_data(conn, mol_id)
                 mol_block = self._get_mol_block(conn, mol_id)
 
-            if mol_block and carbons:
-                mol = Chem.MolFromMolBlock(mol_block)
-                if mol:
-                    self._plot_structure(mol, carbons, mol_id, mol_name, output_dir)
-                    self._plot_shift_intensity(carbons, mol_id, mol_name, output_dir)
+                if mol_block and carbons:
+                    mol = Chem.MolFromMolBlock(mol_block)
+                    if mol:
+                        self._plot_structure(mol, carbons, mol_id, mol_name, output_dir)
+                        self._plot_shift_intensity(carbons, mol_id, mol_name, output_dir)
 
     def _get_mol_block(self, conn: sqlite3.Connection, mol_id: int) -> str:
         """从数据库获取分子结构"""
@@ -225,32 +227,37 @@ class CarbonResultVisualizer:
         file_stem = f"mol_{mol_id}"
         highlight_atoms = [c["index"] for c in carbons]
         highlight_colors = [self._color_to_rgb(c["color"]) for c in carbons]
+        layout = Chem.Mol(mol)
+        AllChem.Compute2DCoords(layout)
 
         # 1. 原子索引图
         self._draw_labeled_molecule(
-            mol=mol,
+            mol=layout,
             highlight_atoms=highlight_atoms,
             highlight_colors=highlight_colors,
             labels={c["index"]: str(c["index"]) for c in carbons},
             filename=os.path.join(output_dir, f"{file_stem}_indices.png"),
+            coordinates_ready=True,
         )
 
         # 2. 数据库位移图
         self._draw_labeled_molecule(
-            mol=mol,
+            mol=layout,
             highlight_atoms=highlight_atoms,
             highlight_colors=highlight_colors,
             labels={c["index"]: f"{c['db_shift']:.1f}" for c in carbons},
             filename=os.path.join(output_dir, f"{file_stem}_db_shifts.png"),
+            coordinates_ready=True,
         )
 
         # 3. 用户位移图
         self._draw_labeled_molecule(
-            mol=mol,
+            mol=layout,
             highlight_atoms=highlight_atoms,
             highlight_colors=highlight_colors,
             labels={c["index"]: f"{c['user_shift']:.1f}" for c in carbons},
             filename=os.path.join(output_dir, f"{file_stem}_user_shifts.png"),
+            coordinates_ready=True,
         )
 
     def _draw_labeled_molecule(
@@ -260,11 +267,14 @@ class CarbonResultVisualizer:
         highlight_colors: List[tuple],
         labels: Dict[int, str],
         filename: str,
+        *,
+        coordinates_ready: bool = False,
     ):
         """优化后的分子结构绘制方法（使用正确坐标类型）"""
         # 复制分子并设置原子标签
         mol = Chem.Mol(mol)
-        AllChem.Compute2DCoords(mol)
+        if not coordinates_ready:
+            AllChem.Compute2DCoords(mol)
         for idx, label in labels.items():
             mol.GetAtomWithIdx(idx).SetProp("atomNote", label)
 
@@ -467,7 +477,7 @@ class ResultViewer:
         header_frame = tk.Frame(detail_win, bg="#2C3E50")
         header_frame.pack(fill=tk.X, padx=10, pady=10)
 
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn, conn:
             # 获取分子数据
             mol_data = conn.execute(
                 """
@@ -569,7 +579,7 @@ class ResultViewer:
     def load_molecule_data(self, mol_id):
         """加载分子数据"""
         self.current_mol_id = mol_id
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn, conn:
             # 获取分子名称
             self.current_mol_name = conn.execute(
                 "SELECT name FROM molecules WHERE mol_id=?", (mol_id,)

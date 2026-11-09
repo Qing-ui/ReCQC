@@ -19,6 +19,16 @@ python gui.py
 
 This working directory keeps the generated database and results together.
 
+## Reference libraries
+
+Select one or more SDF files for each analysis. The first analysis prepares
+the library. Later analyses in the same session can reuse it when the file
+contents and selection order match. Selecting a different library or editing
+an SDF prepares the selected files again.
+
+首次分析会读取并准备所选 SDF。同一会话中，文件内容及选择顺序一致时可复用
+已准备的数据。换库或修改文件内容后，程序会重新导入所选文件。
+
 ## Matching and scoring
 
 Carbon matching uses the original reference order, float32 differences and
