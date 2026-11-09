@@ -333,7 +333,7 @@ class CarbonResultVisualizer:
         plt.title(f"{name}\nShift-Intensity Comparison")
         plt.gca().invert_xaxis()
         plt.grid(True)
-        plt.savefig(os.path.join(output_dir, f"mol_{mol_id}_shift_intensity.png"))
+        plt.gcf().savefig(os.path.join(output_dir, f"mol_{mol_id}_shift_intensity.png"))
         plt.close()
 
     def _color_to_rgb(self, color_str: str) -> tuple:

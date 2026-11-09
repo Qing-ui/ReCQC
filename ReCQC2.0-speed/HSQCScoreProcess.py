@@ -158,6 +158,8 @@ from tqdm import tqdm
 
 
 class UserPointMatcher:
+    _unmatched_point = json.dumps((0, 0))
+
     def __init__(self, db_path: str, user_points: dict, mode: int = 1, CH_merge="N"):
         self.db_path = db_path
         self.user_points = user_points
@@ -254,7 +256,17 @@ class UserPointMatcher:
             if len(used_rows) == pair_count:
                 break
 
-    def _process_single_molecule(self, mol_id, db_points, user_points, h_type=None):
+    def _process_single_molecule(
+        self, mol_id, db_points, user_points, h_type=None, *, user_json=None
+    ):
+        if user_json is None:
+            user_json = {}
+
+        def encode_user(index):
+            if index not in user_json:
+                user_json[index] = json.dumps(user_points[index])
+            return user_json[index]
+
         if self.CH_merge == "N":
             """处理单个分子，每个分子使用独立的used_user集合"""
             matches = []
@@ -271,7 +283,7 @@ class UserPointMatcher:
                         mol_id,
                         db_entry[0],
                         json.dumps(db_entry[2]),
-                        json.dumps(user_points[user_idx]),
+                        encode_user(user_idx),
                         dist,
                         h_type if h_type else db_entry[1],
                     )
@@ -286,7 +298,7 @@ class UserPointMatcher:
                             mol_id,
                             db_entry[0],
                             json.dumps(db_entry[2]),
-                            json.dumps((0, 0)),
+                            self._unmatched_point,
                             float("inf"),
                             h_type if h_type else db_entry[1],
                         )
@@ -326,14 +338,16 @@ class UserPointMatcher:
                     continue
 
                 # 整组匹配同一个用户点
+                ref_json = json.dumps(coord)
+                query_json = encode_user(user_idx)
                 for idx, entry in coord_groups[coord]:
                     c_index, h_type_val, _ = entry
                     matches.append(
                         (
                             mol_id,
                             c_index,
-                            json.dumps(coord),
-                            json.dumps(user_points[user_idx]),
+                            ref_json,
+                            query_json,
                             dist,
                             h_type if h_type else h_type_val,
                         )
@@ -345,14 +359,15 @@ class UserPointMatcher:
 
             # 处理未匹配的数据库点
             for coord, group in coord_groups.items():
+                ref_json = json.dumps(coord)
                 for idx, entry in group:
                     c_index, h_type_val, _ = entry
                     matches.append(
                         (
                             mol_id,
                             c_index,
-                            json.dumps(coord),
-                            json.dumps((0, 0)),
+                            ref_json,
+                            self._unmatched_point,
                             float("inf"),
                             h_type if h_type else h_type_val,
                         )
@@ -375,11 +390,11 @@ class UserPointMatcher:
 
         all_matches = []
         user_pts = [tuple(p) for p in self.user_points["All_type"]]
+        user_json = {}
         for mol_id in sorted(molecules.keys()):
-            used_user = set()  # 每个分子独立使用
             db_points = molecules[mol_id]
             matches = self._process_single_molecule(
-                mol_id=mol_id, db_points=db_points, user_points=user_pts
+                mol_id=mol_id, db_points=db_points, user_points=user_pts, user_json=user_json
             )
             all_matches += matches
         return all_matches
@@ -402,14 +417,14 @@ class UserPointMatcher:
 
         all_matches = []
         user_pts = [tuple(p) for p in self.user_points["type13"]]
+        user_json = {}
 
         for mol_id in sorted(molecules.keys()):
-            used_user = set()  # 每个分子独立使用
             db_points = molecules[mol_id]
 
             # 处理type1/3组合
             matches = self._process_single_molecule(
-                mol_id=mol_id, db_points=db_points, user_points=user_pts
+                mol_id=mol_id, db_points=db_points, user_points=user_pts, user_json=user_json
             )
             all_matches += matches
 
@@ -435,11 +450,16 @@ class UserPointMatcher:
 
         all_matches = []
         user_pts = [tuple(p) for p in user_points]
+        user_json = {}
         for mol_id in sorted(molecules.keys()):
             # 每个分子独立处理
             db_points = [(p[0], h_type, p[1]) for p in molecules[mol_id]]
             matches = self._process_single_molecule(
-                mol_id=mol_id, db_points=db_points, user_points=user_pts, h_type=h_type
+                mol_id=mol_id,
+                db_points=db_points,
+                user_points=user_pts,
+                h_type=h_type,
+                user_json=user_json,
             )
             all_matches += matches
         return all_matches

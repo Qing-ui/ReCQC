@@ -164,9 +164,9 @@ class CombinedScorerGUI:
         self.c_weight, self.ch_weight = final_weights
 
         self._validate_parameters()
-        self.import_report = SDFBatchProcessor.process_files_atomically(sdf_files, db_path)
-        extractor = CarbonCoordinateExtractor(db_path)
-        extractor.process_all()  # 生成carbon_h_coordinates表
+        self.import_report = SDFBatchProcessor.process_files_atomically(
+            sdf_files, db_path, prepare_hsqc=True
+        )
 
     def _default_ch_data(self):
         """生成默认CH数据结构"""
@@ -548,7 +548,7 @@ class CombinedScorerGUI:
         plt.ylabel("13C Shift (ppm)")
         plt.title(title)
         plt.grid(True, linestyle="--", alpha=0.5)
-        plt.savefig(filename, dpi=300, bbox_inches="tight")
+        plt.gcf().savefig(filename, dpi=300, bbox_inches="tight")
         plt.close()
 
     def _plot_carbon_visuals(

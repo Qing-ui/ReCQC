@@ -1,6 +1,7 @@
 import importlib.util
 import os
 import sqlite3
+import sys
 import tempfile
 import unittest
 from contextlib import closing
@@ -43,6 +44,20 @@ class Recqc20SpeedTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertEqual((ORIGINAL / name).read_bytes(), (SPEED / name).read_bytes())
 
+    def test_plot_parallelism_respects_memory_and_available_cpus(self):
+        workers = load(SPEED, "plot_workers.py")
+        mib = 1024**2
+        with patch.object(workers.os, "process_cpu_count", create=True, return_value=16):
+            with patch.object(workers, "_available_memory", return_value=3072 * mib):
+                self.assertEqual(workers._worker_count(20), 8)
+            with patch.object(workers, "_available_memory", return_value=1280 * mib):
+                self.assertEqual(workers._worker_count(20), 2)
+        with (
+            patch.object(workers.os, "process_cpu_count", create=True, return_value=2),
+            patch.object(workers, "_available_memory", return_value=None),
+        ):
+            self.assertEqual(workers._worker_count(20), 2)
+
     def test_prepared_library_preserves_database_and_invalidates_on_same_size_edit(self):
         original = load(ORIGINAL, "PROCESSSDFFILES.py").SDFBatchProcessor
         speed = load(SPEED, "PROCESSSDFFILES.py").SDFBatchProcessor
@@ -80,6 +95,26 @@ class Recqc20SpeedTests(unittest.TestCase):
                 self.assertEqual(speed.process_files_atomically(paths, str(live)), expected_report)
             self.assertEqual(dump(live), dump(baseline))
 
+            hsqc = load(SPEED, "HSQCScoreProcess.py")
+            with patch.dict(sys.modules, {"HSQCScoreProcess": hsqc}):
+                self.assertEqual(
+                    speed.process_files_atomically(paths, str(live), prepare_hsqc=True),
+                    expected_report,
+                )
+                hsqc_dump = dump(live)
+                self.assertTrue(
+                    any("CREATE TABLE carbon_h_coordinates" in row for row in hsqc_dump)
+                )
+                with patch.object(
+                    hsqc.CarbonCoordinateExtractor,
+                    "process_all",
+                    side_effect=AssertionError("expected prepared HSQC coordinates"),
+                ):
+                    speed.process_files_atomically(paths, str(live), prepare_hsqc=True)
+                self.assertEqual(dump(live), hsqc_dump)
+            speed.process_files_atomically(paths, str(live))
+            self.assertEqual(dump(live), dump(baseline))
+
             old_stat = source.stat()
             payload = source.read_bytes()
             updated = payload.replace(b"10.0", b"15.0")
@@ -90,7 +125,7 @@ class Recqc20SpeedTests(unittest.TestCase):
             self.assertEqual(speed.process_files_atomically(paths, str(live)), expected_report)
             self.assertEqual(dump(live), dump(baseline))
 
-            speed._prepared[1].write_bytes(b"invalid cache")
+            speed._prepared[False][0].write_bytes(b"invalid cache")
             self.assertEqual(speed.process_files_atomically(paths, str(live)), expected_report)
             next_source = folder / "next-library.sdf"
             next_source.write_bytes(updated.replace(b"first", b"second"))

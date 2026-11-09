@@ -82,12 +82,18 @@ import sqlite3
 import tempfile
 from contextlib import closing
 from copy import deepcopy
+from functools import lru_cache
 from hashlib import sha256
 from threading import Lock
 from typing import List
 
 from rdkit import Chem, Geometry
 from tqdm import tqdm
+
+
+@lru_cache(maxsize=4096)
+def _indices_json(indices):
+    return json.dumps(indices)
 
 
 class SDFBatchProcessor:
@@ -100,7 +106,8 @@ class SDFBatchProcessor:
 
     _prepared_lock = Lock()
     _prepared_dir = None
-    _prepared = None
+    _prepared_source = None
+    _prepared = {}
     _shift_line = re.compile(r"(\d+)([a-zA-Z]+)?\[(\d+)\]\s+([-+]?\d*\.?\d+)")
 
     @staticmethod
@@ -139,46 +146,73 @@ class SDFBatchProcessor:
         self._init_database()
 
     @classmethod
-    def process_files_atomically(cls, file_paths: List[str], output_db: str):
+    def _restore_prepared(cls, key, prepare_hsqc, staging):
+        cached = cls._prepared.get(prepare_hsqc) if key == cls._prepared_source else None
+        if cached is None:
+            return None
+        path, checksum, report = cached
+        try:
+            shutil.copyfile(path, staging)
+            if cls._digest(staging) == checksum:
+                print(
+                    f"Reused SDF library. Accepted: {report['accepted']}, "
+                    f"rejected: {report['rejected']}"
+                )
+                return deepcopy(report)
+        except OSError:
+            pass
+        staging.unlink(missing_ok=True)
+        cls._prepared.pop(prepare_hsqc, None)
+        return None
+
+    @classmethod
+    def _remember_prepared(cls, key, prepare_hsqc, staging, report):
+        if key != cls._prepared_source:
+            cls._prepared.clear()
+            cls._prepared_source = key
+        try:
+            if cls._prepared_dir is None:
+                cls._prepared_dir = tempfile.TemporaryDirectory(prefix="recqc-library-")
+                atexit.register(cls._prepared_dir.cleanup)
+            name = "library-hsqc.sqlite" if prepare_hsqc else "library.sqlite"
+            cached = Path(cls._prepared_dir.name) / name
+            shutil.copyfile(staging, cached)
+            cls._prepared[prepare_hsqc] = (cached, cls._digest(cached), deepcopy(report))
+        except OSError:
+            cls._prepared.pop(prepare_hsqc, None)
+
+    @classmethod
+    def process_files_atomically(cls, file_paths: List[str], output_db: str, *, prepare_hsqc=False):
         """Import into a staging database and replace the live DB only on success."""
         destination = Path(output_db).resolve()
         staging = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.importing")
         with cls._prepared_lock:
             try:
                 key = cls._source_key(file_paths)
-                if cls._prepared and key == cls._prepared[0]:
-                    _, cached, checksum, report = cls._prepared
-                    try:
-                        shutil.copyfile(cached, staging)
-                        verified = cls._digest(staging) == checksum
-                    except OSError:
-                        verified = False
-                    if verified:
-                        os.replace(staging, destination)
-                        print(
-                            f"Reused SDF library. Accepted: {report['accepted']}, rejected: {report['rejected']}"
+                report = cls._restore_prepared(key, prepare_hsqc, staging)
+                if report is None:
+                    report = cls._restore_prepared(key, False, staging) if prepare_hsqc else None
+                    reusable = report is not None
+                    if report is None:
+                        report = cls(str(staging)).process_files(file_paths)
+                        if report["accepted"] == 0:
+                            raise ValueError(
+                                "No valid molecules were imported from the selected SDF files"
+                            )
+                        # File-level errors may be transient. Record-level rejections
+                        # remain part of the report when the inputs are identical.
+                        complete = all(error["record"] is not None for error in report["errors"])
+                        reusable = (
+                            key is not None and complete and key == cls._source_key(file_paths)
                         )
-                        return deepcopy(report)
-                    staging.unlink(missing_ok=True)
-                    cls._prepared = None
+                        if reusable:
+                            cls._remember_prepared(key, False, staging, report)
+                    if prepare_hsqc:
+                        from HSQCScoreProcess import CarbonCoordinateExtractor
 
-                processor = cls(str(staging))
-                report = processor.process_files(file_paths)
-                if report["accepted"] == 0:
-                    raise ValueError("No valid molecules were imported from the selected SDF files")
-                # A partial file read is retried normally. Deterministic
-                # rejected records are retained in the cached import report.
-                complete = all(error["record"] is not None for error in report["errors"])
-                if key is not None and complete and key == cls._source_key(file_paths):
-                    try:
-                        if cls._prepared_dir is None:
-                            cls._prepared_dir = tempfile.TemporaryDirectory(prefix="recqc-library-")
-                            atexit.register(cls._prepared_dir.cleanup)
-                        cached = Path(cls._prepared_dir.name) / "library.sqlite"
-                        shutil.copyfile(staging, cached)
-                        cls._prepared = (key, cached, cls._digest(cached), deepcopy(report))
-                    except OSError:
-                        cls._prepared = None
+                        CarbonCoordinateExtractor(str(staging)).process_all()
+                        if reusable:
+                            cls._remember_prepared(key, True, staging, report)
                 os.replace(staging, destination)
                 return report
             finally:
@@ -336,10 +370,10 @@ class SDFBatchProcessor:
                     mol_id,
                     atom_index,
                     h_info["count"],
-                    json.dumps(h_info["indices"]),
+                    _indices_json(tuple(h_info["indices"])),
                     json.dumps(h_info["shifts"]),
                     c_shifts.get(atom_index),
-                    json.dumps(h_info["connected_c_idx"]),
+                    _indices_json(tuple(h_info["connected_c_idx"])),
                 )
             )
 

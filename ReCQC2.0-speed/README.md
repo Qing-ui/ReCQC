@@ -24,10 +24,12 @@ This working directory keeps the generated database and results together.
 Select one or more SDF files for each analysis. The first analysis prepares
 the library. Later analyses in the same session can reuse it when the file
 contents and selection order match. Selecting a different library or editing
-an SDF prepares the selected files again.
+an SDF prepares the selected files again. HSQC and joint analyses also reuse
+the library's prepared carbon–proton coordinates when available.
 
 首次分析会读取并准备所选 SDF。同一会话中，文件内容及选择顺序一致时可复用
-已准备的数据。换库或修改文件内容后，程序会重新导入所选文件。
+已准备的数据。HSQC 和联合分析也可复用已提取的碳氢坐标。换库或修改文件内容后，
+程序会重新导入所选文件。
 
 ## Matching and scoring
 
@@ -35,6 +37,9 @@ Carbon matching uses the original reference order, float32 differences and
 first-occurring tie rule. HSQC uses the original rounded distances, row order
 and greedy one-to-one assignment. Carbon typing, exact-coordinate merging,
 environment scores, HSQC tolerances and the joint score follow ReCQC 2.0.
+
+For larger result lists, plot export adjusts parallelism to the available
+processor and memory capacity. Export uses the same plot settings.
 
 The regression suite compares both implementations on duplicate peaks, equal
 distances, empty and uneven groups, and typed and untyped matching. A comparison

@@ -39,9 +39,9 @@ class CHOnlyScorerGUI:
         self.c_tol, self.h_tol = tolerances
 
         self._validate_parameters()
-        self.import_report = SDFBatchProcessor.process_files_atomically(sdf_files, db_path)
-        extractor = CarbonCoordinateExtractor(db_path)
-        extractor.process_all()
+        self.import_report = SDFBatchProcessor.process_files_atomically(
+            sdf_files, db_path, prepare_hsqc=True
+        )
 
     def _default_ch_data(self):
         """生成默认CH数据结构"""
@@ -223,7 +223,7 @@ class CHMatchVisualizer:
         plt.axis("off")
         if title:
             plt.title(title, fontsize=12, pad=10)
-        plt.savefig(filename, dpi=300, bbox_inches="tight")
+        plt.gcf().savefig(filename, dpi=300, bbox_inches="tight")
         plt.close()
 
     def _plot_library_matches(self, output_dir: str):
@@ -340,7 +340,7 @@ class CHMatchVisualizer:
             ax.set_xlim(max(all_h) + h_padding, min(all_h) - h_padding)
             ax.set_ylim(max(all_c) + c_padding, min(all_c) - c_padding)
 
-        plt.savefig(filename, dpi=300, bbox_inches="tight")
+        plt.gcf().savefig(filename, dpi=300, bbox_inches="tight")
         plt.close()
 
     def _plot_user_matches(self, output_dir: str):
