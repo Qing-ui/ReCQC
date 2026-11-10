@@ -250,6 +250,21 @@ class SDFBatchProcessor:
             """)
             conn.commit()
 
+    @staticmethod
+    def _sdf_records(path):
+        try:
+            supplier = Chem.SDMolSupplier(path)
+        except OSError:
+            if os.fspath(path).isascii():
+                raise
+            # Python can open paths that the RDKit file constructor rejects on Windows.
+            with open(path, "rb") as source:
+                if not source.peek(1):
+                    raise
+                yield from Chem.ForwardSDMolSupplier(source)
+        else:
+            yield from supplier
+
     def process_files(self, file_paths: List[str]):
         """处理文件列表"""
         with closing(sqlite3.connect(self.output_db)) as conn:
@@ -262,8 +277,7 @@ class SDFBatchProcessor:
             with tqdm(total=len(file_paths), desc="Processing progress") as pbar:
                 for sdf_path in file_paths:
                     try:
-                        suppl = Chem.SDMolSupplier(sdf_path)
-                        for record_number, mol in enumerate(suppl, start=1):
+                        for record_number, mol in enumerate(self._sdf_records(sdf_path), start=1):
                             report["total"] += 1
                             if not mol:
                                 self._record_rejection(

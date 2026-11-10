@@ -2,6 +2,8 @@ import json
 import os
 import queue
 import re
+import shutil
+import tempfile
 import threading
 import tkinter as tk
 from datetime import datetime
@@ -82,7 +84,6 @@ class BaseModeFrame(ttk.Frame):
         self._analysis_running = False
         self._analysis_queue = queue.Queue()
         self.create_widgets()
-        self.db_path = "chem_data.db"
 
     def create_widgets(self):
         file_frame = ttk.Frame(self)
@@ -143,12 +144,23 @@ class BaseModeFrame(ttk.Frame):
         raise NotImplementedError("Analytical methods must be implemented")
 
     def _analysis_worker(self, config):
+        workspace = None
         try:
-            payload = self.execute_analysis(config)
+            workspace = tempfile.TemporaryDirectory(prefix="recqc-result-")
+            db_path = Path(workspace.name) / "chem_data.db"
+            result = self.execute_analysis({**config, "db_path": str(db_path)})
+            # Keep the latest database available at its usual path. Result windows
+            # read the private database, even when another run replaces this copy.
+            with tempfile.TemporaryDirectory(dir=Path.cwd(), prefix=".recqc-db-") as staging:
+                latest = Path(staging) / db_path.name
+                shutil.copyfile(db_path, latest)
+                latest.replace(Path.cwd() / db_path.name)
         except Exception as exc:
+            if workspace is not None:
+                workspace.cleanup()
             self._analysis_queue.put(("error", str(exc)))
         else:
-            self._analysis_queue.put(("success", payload))
+            self._analysis_queue.put(("success", (result, workspace)))
 
     def _poll_analysis_queue(self):
         try:
@@ -162,9 +174,17 @@ class BaseModeFrame(ttk.Frame):
             self._set_analysis_idle()
             messagebox.showerror("Analysis error", payload)
             return
+        result, workspace = payload
         try:
-            self.show_analysis_results(payload)
+            window = self.show_analysis_results(result)
+
+            def release_database(event):
+                if event.widget is window:
+                    workspace.cleanup()
+
+            window.bind("<Destroy>", release_database, add="+")
         except Exception as exc:
+            workspace.cleanup()
             messagebox.showerror("Result display error", str(exc))
         finally:
             self._set_analysis_idle()
@@ -717,9 +737,10 @@ class CombinedModeFrame(BaseModeFrame):
         self.save_import_report(pipeline.import_report, output_dir)
         pipeline._generate_plots(output_dir=output_dir, results=results)
         viewer = CombinedResultViewer(
-            db_path="chem_data.db", results=results, output_dir=output_dir
+            db_path=pipeline.db_path, results=results, output_dir=output_dir
         )
         viewer.create_result_window(self.master)
+        return viewer.top
 
     def get_ch_data(self):
 
@@ -1092,11 +1113,11 @@ class CarbonOnlyModeFrame(BaseModeFrame):
         pipeline, results = payload
         output_dir = self.create_run_output_dir("molecule_plots")
         self.save_import_report(pipeline.import_report, output_dir)
-        visualizer = CarbonResultVisualizer(db_path="chem_data.db", top_results=results)
+        visualizer = CarbonResultVisualizer(db_path=pipeline.db_path, top_results=results)
         visualizer.generate_plots(output_dir=output_dir)
-        ResultViewer("chem_data.db", results, output_dir=output_dir).create_result_window(
-            self.master
-        )
+        viewer = ResultViewer(pipeline.db_path, results, output_dir=output_dir)
+        viewer.create_result_window(self.master)
+        return viewer.top
 
     def get_c_data(self):
         if self.c_mode.get() == "typed":
@@ -1250,11 +1271,12 @@ class CHMatchModeFrame(BaseModeFrame):
         output_dir = self.create_run_output_dir("ch_match_plots")
         self.save_import_report(pipeline.import_report, output_dir)
         visualizer = CHMatchVisualizer(
-            db_path="chem_data.db", top_results=results, mode=config["ch_mode"]
+            db_path=pipeline.db_path, top_results=results, mode=config["ch_mode"]
         )
         visualizer.generate_plots(output_dir=output_dir)
-        viewer = CHResultViewer(db_path="chem_data.db", results=results, output_dir=output_dir)
+        viewer = CHResultViewer(db_path=pipeline.db_path, results=results, output_dir=output_dir)
         viewer.create_result_window(self.master)
+        return viewer.top
 
     def get_ch_data(self):
         ch_data = {}

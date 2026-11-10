@@ -27,9 +27,16 @@ contents and selection order match. Selecting a different library or editing
 an SDF prepares the selected files again. HSQC and joint analyses also reuse
 the library's prepared carbon–proton coordinates when available.
 
+SDF paths can contain Chinese characters. Each open result window reads its
+own analysis data. The working directory's `chem_data.db` contains the latest
+successful analysis.
+
 首次分析会读取并准备所选 SDF。同一会话中，文件内容及选择顺序一致时可复用
 已准备的数据。HSQC 和联合分析也可复用已提取的碳氢坐标。换库或修改文件内容后，
 程序会重新导入所选文件。
+
+SDF 路径支持中文。已打开的结果窗口会读取各自的分析数据。工作目录中的
+`chem_data.db` 保存最近一次成功分析的数据。
 
 ## Matching and scoring
 

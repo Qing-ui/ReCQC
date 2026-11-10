@@ -7,7 +7,9 @@ import unittest
 from contextlib import closing
 from itertools import product
 from pathlib import Path
-from unittest.mock import patch
+from queue import Queue
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from rdkit import Chem
 
@@ -57,6 +59,70 @@ class Recqc20SpeedTests(unittest.TestCase):
             patch.object(workers, "_available_memory", return_value=None),
         ):
             self.assertEqual(workers._worker_count(20), 2)
+
+    def test_imports_sdf_when_rdkit_cannot_open_unicode_path(self):
+        speed = load(SPEED, "PROCESSSDFFILES.py").SDFBatchProcessor
+        with tempfile.TemporaryDirectory() as temp_dir:
+            folder = Path(temp_dir)
+            source = folder / "参考谱.sdf"
+            database = folder / "library.db"
+            mol = Chem.MolFromSmiles("CC")
+            mol.SetProp("ID", "ethane")
+            mol.SetProp("FW", "30.07")
+            mol.SetProp("Predicted 13C shifts", "1C[1] 10.0\n2C[2] 20.0")
+            with source.open("w", encoding="utf-8") as handle, Chem.SDWriter(handle) as writer:
+                writer.write(mol)
+            with patch.object(Chem, "SDMolSupplier", side_effect=OSError("Bad input file")):
+                report = speed.process_files_atomically([str(source)], str(database))
+            self.assertEqual((report["total"], report["accepted"], report["errors"]), (1, 1, []))
+            with closing(sqlite3.connect(database)) as conn:
+                self.assertEqual(
+                    conn.execute("SELECT name, source_file FROM molecules").fetchall(),
+                    [("ethane", str(source))],
+                )
+
+    def test_result_windows_keep_each_analysis_database_until_closed(self):
+        with patch.object(sys, "path", [str(SPEED), *sys.path]), patch.dict(sys.modules):
+            gui = load(SPEED, "gui.py")
+        base = gui.BaseModeFrame
+
+        def execute(config):
+            with closing(sqlite3.connect(config["db_path"])) as conn, conn:
+                conn.execute("CREATE TABLE score (label TEXT)")
+                conn.execute("INSERT INTO score VALUES (?)", (config["label"],))
+            return Path(config["db_path"])
+
+        def read_score(path):
+            with closing(sqlite3.connect(path)) as conn:
+                return conn.execute("SELECT label FROM score").fetchone()[0]
+
+        with (
+            tempfile.TemporaryDirectory() as temp_dir,
+            patch.object(gui.Path, "cwd", return_value=Path(temp_dir)),
+        ):
+            windows = []
+            for label in ("first", "second"):
+                window = Mock()
+                frame = SimpleNamespace(
+                    execute_analysis=execute,
+                    show_analysis_results=Mock(return_value=window),
+                    _analysis_queue=Queue(),
+                    _set_analysis_idle=Mock(),
+                )
+                with patch.object(gui.messagebox, "showerror") as error:
+                    base._analysis_worker(frame, {"label": label})
+                    base._poll_analysis_queue(frame)
+                    error.assert_not_called()
+                db_path = frame.show_analysis_results.call_args.args[0]
+                close_callback = window.bind.call_args.args[1]
+                windows.append((window, db_path, close_callback))
+            self.assertEqual(read_score(Path(temp_dir) / "chem_data.db"), "second")
+            self.assertEqual([read_score(db) for _, db, _ in windows], ["first", "second"])
+            for window, db_path, close_callback in windows:
+                close_callback(SimpleNamespace(widget=object()))
+                self.assertTrue(db_path.exists())
+                close_callback(SimpleNamespace(widget=window))
+                self.assertFalse(db_path.exists())
 
     def test_prepared_library_preserves_database_and_invalidates_on_same_size_edit(self):
         original = load(ORIGINAL, "PROCESSSDFFILES.py").SDFBatchProcessor
